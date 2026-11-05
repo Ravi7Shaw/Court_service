@@ -1,0 +1,56 @@
+name: ci
+
+on:
+  push:
+  pull_request:
+
+jobs:
+  checks:
+    runs-on: ubuntu-24.04
+    services:
+      postgres:
+        image: postgres:15
+        env:
+          POSTGRES_USER: booking
+          POSTGRES_PASSWORD: booking
+          POSTGRES_DB: booking
+        ports: ["5432:5432"]
+        options: >-
+          --health-cmd "pg_isready -U booking"
+          --health-interval 3s --health-timeout 3s --health-retries 20
+    env:
+      DATABASE_URL: postgresql+psycopg://booking:booking@localhost:5432/booking
+      TEST_DATABASE_URL: postgresql+psycopg://booking:booking@localhost:5432/booking_test
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+          cache: pip
+      - name: Install
+        run: pip install -e ".[dev]"
+      - name: Lint
+        run: ruff check .
+      - name: Format
+        run: ruff format --check .
+      - name: Type check (strict)
+        run: mypy
+      - name: Create the test database
+        run: PGPASSWORD=booking psql -h localhost -U booking -d booking -c "CREATE DATABASE booking_test"
+      - name: Migrations apply cleanly on an empty database
+        run: alembic upgrade head
+      - name: Tests (domain, API contract, constraints, concurrency)
+        run: pytest -q
+
+  compose-smoke:
+    runs-on: ubuntu-24.04
+    needs: checks
+    steps:
+      - uses: actions/checkout@v4
+      - name: Start the stack
+        run: docker compose up -d --build --wait
+      - name: The API answers
+        run: curl -fsS http://localhost:8000/readyz
+      - name: Stop the stack
+        if: always()
+        run: docker compose down -v
