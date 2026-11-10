@@ -88,4 +88,5 @@ class IdempotencyKey(Base):
     operation: Mapped[str] = mapped_column(String(40), primary_key=True)
     key: Mapped[str] = mapped_column(String(120), primary_key=True)
     reservation_id: Mapped[uuid.UUID | None] = mapped_column(ForeignKey("reservations.id"), nullable=True)
+    request_hash: Mapped[str] = mapped_column(String(64), nullable=False)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())

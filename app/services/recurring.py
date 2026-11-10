@@ -17,7 +17,7 @@ from app.errors import ApiError
 from app.models import RecurringSeries, Reservation
 from app.services.common import (
     MAX_ACTIVE_BOOKINGS,
-    db_now,
+    expire_stale_overlaps,
     is_exclusion_violation,
     live_booking_count,
     load_court,
@@ -52,18 +52,9 @@ def create_series(
         raise ApiError("payments_not_supported", 501, "online payment is not available yet")
     hours = validate_interval(starts_at, ends_at, ctx.tz, ctx.window)
     lock_member(session, member_id)
-    now = db_now(session)
-    if starts_at <= now:
-        raise ApiError("invalid_interval", 422, "a series must start in the future")
-    if live_booking_count(session, member_id, now) + occurrences > MAX_ACTIVE_BOOKINGS:
-        raise ApiError("booking_limit_reached", 409, "a member can hold at most three active bookings")
-
-    series = RecurringSeries(member_id=member_id, court_id=court_id, occurrences=occurrences)
-    session.add(series)
-    session.flush()
 
     first_local = starts_at.astimezone(ctx.tz)
-    reservations: list[Reservation] = []
+    planned: list[tuple[datetime, datetime, int]] = []
     for week in range(occurrences):
         local_start = local_occurrence_start(first_local, week)
         if not local_wall_time_exists(local_start, ctx.tz):
@@ -74,6 +65,22 @@ def create_series(
         price = price_minor(
             start, hours, ctx.tz, ctx.peaks, ctx.venue.peak_rate_minor, ctx.venue.offpeak_rate_minor
         )
+        planned.append((start, end, price))
+
+    # Lock/expire all stale conflicts for every occurrence before inserting. If any
+    # confirmed reservation conflicts later, the surrounding transaction rolls back.
+    now = expire_stale_overlaps(session, court_id, [(start, end) for start, end, _ in planned])
+    if starts_at <= now:
+        raise ApiError("invalid_interval", 422, "a series must start in the future")
+    if live_booking_count(session, member_id, now) + occurrences > MAX_ACTIVE_BOOKINGS:
+        raise ApiError("booking_limit_reached", 409, "a member can hold at most three active bookings")
+
+    series = RecurringSeries(member_id=member_id, court_id=court_id, occurrences=occurrences)
+    session.add(series)
+    session.flush()
+
+    reservations: list[Reservation] = []
+    for start, end, price in planned:
         reservation = Reservation(
             court_id=court_id,
             member_id=member_id,

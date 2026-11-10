@@ -74,6 +74,11 @@ def live_booking_count(session: Session, member_id: uuid.UUID, now: datetime) ->
             Reservation.member_id == member_id,
             or_(
                 and_(Reservation.status == "held", Reservation.hold_expires_at > now),
+                and_(
+                    Reservation.status == "payment_pending",
+                    Reservation.hold_expires_at > now,
+                    Reservation.payment_hard_deadline > now,
+                ),
                 and_(Reservation.status == "confirmed", Reservation.starts_at > now),
             ),
         )
@@ -81,15 +86,68 @@ def live_booking_count(session: Session, member_id: uuid.UUID, now: datetime) ->
     return int(session.execute(stmt).scalar_one())
 
 
-def claim_idempotency_key(session: Session, member_id: uuid.UUID, operation: str, key: str) -> bool:
-    """True if this request owns the key. A concurrent duplicate blocks here until the first commits."""
+def expire_stale_overlaps(
+    session: Session,
+    court_id: uuid.UUID,
+    intervals: list[tuple[datetime, datetime]],
+) -> datetime:
+    """Expire overlapping holds whose applicable deadlines have elapsed.
+
+    Rows are locked in stable ID order. The database clock is read after lock
+    acquisition, so a request waiting on contention does not use a stale time.
+    """
+    overlap_predicates = [
+        and_(Reservation.starts_at < end, Reservation.ends_at > start)
+        for start, end in intervals
+    ]
+    rows = session.scalars(
+        select(Reservation)
+        .where(
+            Reservation.court_id == court_id,
+            Reservation.status.in_(LIVE_PENDING),
+            or_(*overlap_predicates),
+        )
+        .order_by(Reservation.id)
+        .with_for_update()
+    ).all()
+    now = db_now(session)
+    for row in rows:
+        expired = row.hold_expires_at is None or row.hold_expires_at <= now
+        if row.status == "payment_pending":
+            expired = expired or row.payment_hard_deadline is None or row.payment_hard_deadline <= now
+        if expired:
+            row.status = "expired"
+    session.flush()
+    return now
+
+
+def claim_idempotency_key(
+    session: Session, member_id: uuid.UUID, operation: str, key: str, request_hash: str
+) -> bool:
+    """True if this request owns the key. A concurrent duplicate blocks until the first commits."""
     result = session.execute(
         pg_insert(IdempotencyKey)
-        .values(member_id=member_id, operation=operation, key=key, reservation_id=None)
+        .values(
+            member_id=member_id,
+            operation=operation,
+            key=key,
+            reservation_id=None,
+            request_hash=request_hash,
+        )
         .on_conflict_do_nothing(index_elements=["member_id", "operation", "key"])
         .returning(IdempotencyKey.key)
     )
     return result.first() is not None
+
+
+def stored_request_hash(session: Session, member_id: uuid.UUID, operation: str, key: str) -> str:
+    return session.execute(
+        select(IdempotencyKey.request_hash).where(
+            IdempotencyKey.member_id == member_id,
+            IdempotencyKey.operation == operation,
+            IdempotencyKey.key == key,
+        )
+    ).scalar_one()
 
 
 def attach_reservation_to_key(
