@@ -36,6 +36,13 @@ def availability(
     session: Session, court_id: uuid.UUID, range_from: datetime, range_to: datetime
 ) -> list[SlotView]:
     """A snapshot of hourly slots. Reads never lock. A stale view can only cause a 409 on hold."""
+    if (
+        range_from.tzinfo is None
+        or range_from.utcoffset() is None
+        or range_to.tzinfo is None
+        or range_to.utcoffset() is None
+    ):
+        raise ApiError("invalid_interval", 422, "availability timestamps must include a timezone")
     if range_to <= range_from or range_to - range_from > timedelta(days=7):
         raise ApiError("invalid_interval", 422, "the range must be between 1 second and 7 days")
     ctx = load_court(session, court_id)
@@ -59,6 +66,11 @@ def availability(
             or_(
                 Reservation.status == "confirmed",
                 and_(Reservation.status == "held", Reservation.hold_expires_at > now),
+                and_(
+                    Reservation.status == "payment_pending",
+                    Reservation.hold_expires_at > now,
+                    Reservation.payment_hard_deadline > now,
+                ),
             ),
         )
     ).all()

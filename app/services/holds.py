@@ -1,8 +1,10 @@
 from __future__ import annotations
 
+import hashlib
+import json
 import uuid
 from dataclasses import dataclass
-from datetime import datetime, timedelta
+from datetime import UTC, datetime, timedelta
 
 from sqlalchemy import select
 from sqlalchemy.exc import IntegrityError
@@ -17,14 +19,27 @@ from app.services.common import (
     claim_idempotency_key,
     db_now,
     ensure_member,
+    expire_stale_overlaps,
     is_exclusion_violation,
     live_booking_count,
     load_court,
     lock_member,
+    stored_request_hash,
     stored_reservation_for_key,
 )
 
 HOLD_OPERATION = "POST /holds"
+
+
+def _hold_request_hash(court_id: uuid.UUID, starts_at: datetime, ends_at: datetime) -> str:
+    """Fingerprint the semantic request, canonicalised to UTC."""
+    payload = {
+        "court_id": str(court_id),
+        "starts_at": starts_at.astimezone(UTC).isoformat(),
+        "ends_at": ends_at.astimezone(UTC).isoformat(),
+    }
+    canonical = json.dumps(payload, sort_keys=True, separators=(",", ":")).encode("utf-8")
+    return hashlib.sha256(canonical).hexdigest()
 
 
 @dataclass(frozen=True)
@@ -51,13 +66,21 @@ def create_hold(
     if ctx.venue.payments_enabled:
         raise ApiError("payments_not_supported", 501, "online payment is not available yet")
     hours = validate_interval(starts_at, ends_at, ctx.tz, ctx.window)
+    request_hash = _hold_request_hash(court_id, starts_at, ends_at)
 
     # Lock order: idempotency key, then member, then overlapping rows, then the insert.
     # The member row must exist before the key row, which references it.
     ensure_member(session, member_id)
     if idempotency_key is not None and not claim_idempotency_key(
-        session, member_id, HOLD_OPERATION, idempotency_key
+        session, member_id, HOLD_OPERATION, idempotency_key, request_hash
     ):
+        previous_hash = stored_request_hash(session, member_id, HOLD_OPERATION, idempotency_key)
+        if previous_hash != request_hash:
+            raise ApiError(
+                "idempotency_key_reused",
+                422,
+                "the idempotency key was already used for a different booking request",
+            )
         existing = stored_reservation_for_key(session, member_id, HOLD_OPERATION, idempotency_key)
         reservation = session.get(Reservation, existing) if existing is not None else None
         if reservation is None:
@@ -65,25 +88,9 @@ def create_hold(
         return HoldResult(reservation, created=False)
 
     lock_member(session, member_id)
-    overlapping = session.scalars(
-        select(Reservation)
-        .where(
-            Reservation.court_id == court_id,
-            Reservation.status.in_(("held", "payment_pending")),
-            Reservation.starts_at < ends_at,
-            Reservation.ends_at > starts_at,
-        )
-        .order_by(Reservation.id)
-        .with_for_update()
-    ).all()
-    now = db_now(session)
+    now = expire_stale_overlaps(session, court_id, [(starts_at, ends_at)])
     if starts_at <= now:
         raise ApiError("invalid_interval", 422, "a booking must start in the future")
-
-    # Expire stale holds before the insert, so the constraint never sees a dead hold as live.
-    for stale in overlapping:
-        if stale.status == "held" and not hold_is_live(now, stale.hold_expires_at):
-            stale.status = "expired"
 
     if live_booking_count(session, member_id, now) >= MAX_ACTIVE_BOOKINGS:
         raise ApiError("booking_limit_reached", 409, "a member can hold at most three active bookings")
