@@ -1,0 +1,73 @@
+name: court-service
+services:
+  api:
+    build: { context: .., dockerfile: Dockerfile }
+    restart: unless-stopped
+    env_file: [./api.env]
+    command: ["uvicorn", "app.api:app", "--host", "0.0.0.0", "--port", "8000", "--workers", "1"]
+    ports: ["${NODE_PRIVATE_IP}:8000:8000"]
+  web:
+    image: nginx:1.28-alpine
+    restart: unless-stopped
+    volumes:
+      - ../frontend:/usr/share/nginx/html:ro
+      - ../nginx/default.conf:/etc/nginx/conf.d/default.conf:ro
+      - ../nginx/proxy_params:/etc/nginx/proxy_params:ro
+    ports: ["80:80"]
+    depends_on: [api]
+  node-exporter:
+    image: quay.io/prometheus/node-exporter:v1.12.1
+    restart: unless-stopped
+    pid: host
+    command: ["--path.rootfs=/host"]
+    volumes:
+      - /proc:/host/proc:ro
+      - /sys:/host/sys:ro
+      - /:/rootfs:ro,rslave
+    ports: ["${NODE_PRIVATE_IP}:9100:9100"]
+  prometheus:
+    image: prom/prometheus:v3.16.0
+    restart: unless-stopped
+    environment:
+      PRIMARY_PRIVATE_IP: ${PRIMARY_PRIVATE_IP}
+      SECONDARY_PRIVATE_IP: ${SECONDARY_PRIVATE_IP}
+    command: ["--config.file=/etc/prometheus/prometheus.yml", "--config.expand-env", "--storage.tsdb.path=/prometheus", "--storage.tsdb.retention.time=3d", "--web.enable-lifecycle"]
+    volumes:
+      - ./monitoring/prometheus/prometheus.yml:/etc/prometheus/prometheus.yml:ro
+      - ${DATA_DIR:-/srv/court-data}/prometheus:/prometheus
+    ports: ["9090:9090"]
+  loki:
+    image: grafana/loki:3.7.8
+    restart: unless-stopped
+    command: ["-config.file=/etc/loki/config.yml"]
+    volumes:
+      - ./monitoring/loki/config.yml:/etc/loki/config.yml:ro
+      - ${DATA_DIR:-/srv/court-data}/loki:/loki
+    ports: ["${NODE_PRIVATE_IP}:3100:3100"]
+  alloy:
+    image: grafana/alloy:v1.22.0
+    user: "0:0"
+    restart: unless-stopped
+    command: ["run", "--server.http.listen-addr=0.0.0.0:12345", "--storage.path=/var/lib/alloy", "--disable-reporting", "/etc/alloy/config.alloy"]
+    environment:
+      LOKI_HOST: loki:3100
+    volumes:
+      - ./monitoring/alloy/config.alloy:/etc/alloy/config.alloy:ro
+      - ${DATA_DIR:-/srv/court-data}/alloy:/var/lib/alloy
+      - /var/lib/docker/containers:/var/lib/docker/containers:ro
+      - /var/log:/var/log:ro
+    depends_on: [loki]
+  grafana:
+    image: grafana/grafana:13.3.1
+    restart: unless-stopped
+    environment:
+      GF_SECURITY_ADMIN_USER: ${GRAFANA_ADMIN_USER}
+      GF_SECURITY_ADMIN_PASSWORD: ${GRAFANA_ADMIN_PASSWORD}
+      GF_USERS_ALLOW_SIGN_UP: "false"
+      GF_SERVER_HTTP_PORT: "3000"
+    volumes:
+      - ${DATA_DIR:-/srv/court-data}/grafana:/var/lib/grafana
+      - ./monitoring/grafana/provisioning:/etc/grafana/provisioning:ro
+      - ./monitoring/grafana/dashboards:/var/lib/grafana/dashboards:ro
+    ports: ["3000:3000"]
+    depends_on: [prometheus, loki]

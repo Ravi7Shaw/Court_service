@@ -1,0 +1,10 @@
+apiVersion: 1
+providers:
+  - name: Court Service
+    orgId: 1
+    folder: Court Service
+    type: file
+    disableDeletion: true
+    editable: true
+    options:
+      path: /var/lib/grafana/dashboards

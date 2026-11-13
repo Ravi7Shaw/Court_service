@@ -1,0 +1,324 @@
+---
+- name: Configure primary stateful node and launch database, Redis, API and worker
+  hosts: primary
+  become: true
+  vars:
+    project_dir: /opt/court-service
+    data_device: /dev/nvme1n1
+    smtp_host_value: "{{ lookup('env', 'SMTP_HOST') }}"
+    smtp_port_value: "{{ lookup('env', 'SMTP_PORT') | default('587', true) }}"
+    smtp_username_value: "{{ lookup('env', 'SMTP_USERNAME') }}"
+    smtp_password_value: "{{ lookup('env', 'SMTP_PASSWORD') }}"
+    smtp_from_value: "{{ lookup('env', 'SMTP_FROM') | default('no-reply@example.test', true) }}"
+  tasks:
+    - name: Install Docker, XFS and utilities
+      ansible.builtin.dnf:
+        name: [docker, xfsprogs, curl-minimal, jq, rsync]
+        state: present
+    - name: Start and enable Docker
+      ansible.builtin.service:
+        name: docker
+        state: started
+        enabled: true
+    - name: Create Docker CLI plugin directory
+      ansible.builtin.file:
+        path: /usr/local/lib/docker/cli-plugins
+        state: directory
+        mode: "0755"
+    - name: Install Docker Compose plugin
+      ansible.builtin.get_url:
+        url: https://github.com/docker/compose/releases/download/v2.32.4/docker-compose-linux-x86_64
+        dest: /usr/local/lib/docker/cli-plugins/docker-compose
+        mode: "0755"
+    - name: Wait for attached encrypted EBS volume
+      ansible.builtin.wait_for:
+        path: "{{ data_device }}"
+        state: present
+        timeout: 180
+    - name: Check whether data volume already has a filesystem
+      ansible.builtin.command: "blkid {{ data_device }}"
+      register: data_fs
+      changed_when: false
+      failed_when: false
+    - name: Format new data volume
+      ansible.builtin.command: "mkfs.xfs -f {{ data_device }}"
+      when: data_fs.rc != 0
+    - name: Create persistent data mount
+      ansible.builtin.file:
+        path: /srv/court-data
+        state: directory
+        mode: "0755"
+    - name: Mount persistent data volume
+      ansible.builtin.mount:
+        path: /srv/court-data
+        src: "{{ data_device }}"
+        fstype: xfs
+        opts: defaults,nofail
+        state: mounted
+    - name: Create PostgreSQL data directory with container ownership
+      ansible.builtin.file:
+        path: /srv/court-data/postgres
+        state: directory
+        owner: "70"
+        group: "70"
+        mode: "0700"
+    - name: Create Redis data directory with container ownership
+      ansible.builtin.file:
+        path: /srv/court-data/redis
+        state: directory
+        owner: "999"
+        group: "999"
+        mode: "0750"
+    - name: Create Alloy storage directory
+      ansible.builtin.file:
+        path: /srv/court-data/alloy
+        state: directory
+        owner: root
+        group: root
+        mode: "0750"
+    - name: Create project directory
+      ansible.builtin.file:
+        path: "{{ project_dir }}"
+        state: directory
+        owner: ec2-user
+        group: ec2-user
+        mode: "0755"
+    - name: Copy project to primary node
+      become: false
+      ansible.posix.synchronize:
+        src: "{{ playbook_dir }}/../../"
+        dest: "{{ project_dir }}/"
+        archive: true
+        delete: true
+        rsync_opts:
+          - "--exclude=.git"
+          - "--exclude=.venv"
+          - "--exclude=__pycache__"
+          - "--exclude=.pytest_cache"
+          - "--exclude=.mypy_cache"
+          - "--exclude=.ruff_cache"
+          - "--exclude=.terraform"
+          - "--exclude=terraform.tfstate*"
+          - "--exclude=*.tfvars"
+          - "--exclude=deployment-credentials.txt"
+          - "--exclude=*.pem"
+          - "--exclude=*.key"
+          - "--exclude=.env"
+          - "--exclude=deploy/.env"
+          - "--exclude=deploy/api.env"
+          - "--exclude=deploy/worker.env"
+          - "--exclude=deploy/ansible/inventory.ini"
+    - name: Create Compose interpolation secrets file
+      ansible.builtin.template:
+        src: "{{ playbook_dir }}/.env.j2"
+        dest: "{{ project_dir }}/deploy/.env"
+        owner: root
+        group: root
+        mode: "0600"
+      no_log: true
+
+    - name: Create API environment file
+      ansible.builtin.template:
+        src: "{{ playbook_dir }}/api.env.j2"
+        dest: "{{ project_dir }}/deploy/api.env"
+        owner: root
+        group: root
+        mode: "0600"
+      vars:
+        database_url: "postgresql+psycopg://court:{{ db_password }}@db:5432/court"
+        redis_url: "redis://:{{ redis_password }}@redis:6379/0"
+        email_backend: "{{ 'smtp' if smtp_host_value | length > 0 else 'console' }}"
+      no_log: true
+
+    - name: Create worker environment file
+      ansible.builtin.template:
+        src: "{{ playbook_dir }}/worker.env.j2"
+        dest: "{{ project_dir }}/deploy/worker.env"
+        owner: root
+        group: root
+        mode: "0600"
+      vars:
+        database_url: "postgresql+psycopg://court:{{ db_password }}@db:5432/court"
+        redis_url: "redis://:{{ redis_password }}@redis:6379/0"
+        email_backend: "{{ 'smtp' if smtp_host_value | length > 0 else 'console' }}"
+        smtp_host: "{{ smtp_host_value }}"
+        smtp_port: "{{ smtp_port_value }}"
+        smtp_username: "{{ smtp_username_value }}"
+        smtp_password: "{{ smtp_password_value }}"
+        smtp_from: "{{ smtp_from_value }}"
+      no_log: true
+
+    - name: Validate primary Compose configuration
+      ansible.builtin.command:
+        cmd: docker compose --env-file deploy/.env -f deploy/compose-primary.yml config --quiet
+        chdir: "{{ project_dir }}"
+      changed_when: false
+    - name: Start PostgreSQL and Redis
+      ansible.builtin.command:
+        cmd: docker compose --env-file deploy/.env -f deploy/compose-primary.yml up -d --build db redis
+        chdir: "{{ project_dir }}"
+    - name: Wait for PostgreSQL
+      ansible.builtin.command:
+        cmd: docker compose --env-file deploy/.env -f deploy/compose-primary.yml exec -T db pg_isready -U court -d court
+        chdir: "{{ project_dir }}"
+      register: pg_ready
+      retries: 30
+      delay: 5
+      until: pg_ready.rc == 0
+      changed_when: false
+    - name: Run database migrations and bootstrap admin/demo courts
+      ansible.builtin.command:
+        cmd: docker compose --env-file deploy/.env -f deploy/compose-primary.yml run --rm --no-deps --env BOOTSTRAP_ADMIN_EMAIL={{ admin_email }} --env BOOTSTRAP_ADMIN_PASSWORD={{ admin_password }} api sh -c 'alembic upgrade head && python -m app.seed'
+        chdir: "{{ project_dir }}"
+      no_log: true
+
+    - name: Launch primary API, worker, Nginx and log shipper
+      ansible.builtin.command:
+        cmd: docker compose --env-file deploy/.env -f deploy/compose-primary.yml up -d --build
+        chdir: "{{ project_dir }}"
+    - name: Wait for primary API readiness
+      ansible.builtin.uri:
+        url: "http://{{ node_private_ip }}:8000/readyz"
+        status_code: 200
+      register: primary_ready
+      retries: 30
+      delay: 5
+      until: primary_ready.status == 200
+
+- name: Configure secondary app and observability node
+  hosts: secondary
+  become: true
+  vars:
+    project_dir: /opt/court-service
+    smtp_host_value: "{{ lookup('env', 'SMTP_HOST') }}"
+    smtp_port_value: "{{ lookup('env', 'SMTP_PORT') | default('587', true) }}"
+    smtp_username_value: "{{ lookup('env', 'SMTP_USERNAME') }}"
+    smtp_password_value: "{{ lookup('env', 'SMTP_PASSWORD') }}"
+    smtp_from_value: "{{ lookup('env', 'SMTP_FROM') | default('no-reply@example.test', true) }}"
+  tasks:
+    - name: Install Docker and utilities
+      ansible.builtin.dnf:
+        name: [docker, curl-minimal, jq, rsync]
+        state: present
+    - name: Start and enable Docker
+      ansible.builtin.service:
+        name: docker
+        state: started
+        enabled: true
+    - name: Create Docker CLI plugin directory
+      ansible.builtin.file:
+        path: /usr/local/lib/docker/cli-plugins
+        state: directory
+        mode: "0755"
+    - name: Install Docker Compose plugin
+      ansible.builtin.get_url:
+        url: https://github.com/docker/compose/releases/download/v2.32.4/docker-compose-linux-x86_64
+        dest: /usr/local/lib/docker/cli-plugins/docker-compose
+        mode: "0755"
+    - name: Create Prometheus data directory
+      ansible.builtin.file:
+        path: /srv/court-data/prometheus
+        state: directory
+        owner: "65534"
+        group: "65534"
+        mode: "0750"
+    - name: Create Loki data directory
+      ansible.builtin.file:
+        path: /srv/court-data/loki
+        state: directory
+        owner: "10001"
+        group: "10001"
+        mode: "0750"
+    - name: Create Grafana data directory
+      ansible.builtin.file:
+        path: /srv/court-data/grafana
+        state: directory
+        owner: "472"
+        group: "472"
+        mode: "0750"
+    - name: Create Alloy storage directory
+      ansible.builtin.file:
+        path: /srv/court-data/alloy
+        state: directory
+        owner: root
+        group: root
+        mode: "0750"
+    - name: Create project directory
+      ansible.builtin.file:
+        path: "{{ project_dir }}"
+        state: directory
+        owner: ec2-user
+        group: ec2-user
+        mode: "0755"
+    - name: Copy project to secondary node
+      become: false
+      ansible.posix.synchronize:
+        src: "{{ playbook_dir }}/../../"
+        dest: "{{ project_dir }}/"
+        archive: true
+        delete: true
+        rsync_opts:
+          - "--exclude=.git"
+          - "--exclude=.venv"
+          - "--exclude=__pycache__"
+          - "--exclude=.pytest_cache"
+          - "--exclude=.mypy_cache"
+          - "--exclude=.ruff_cache"
+          - "--exclude=.terraform"
+          - "--exclude=terraform.tfstate*"
+          - "--exclude=*.tfvars"
+          - "--exclude=deployment-credentials.txt"
+          - "--exclude=*.pem"
+          - "--exclude=*.key"
+          - "--exclude=.env"
+          - "--exclude=deploy/.env"
+          - "--exclude=deploy/api.env"
+          - "--exclude=deploy/worker.env"
+          - "--exclude=deploy/ansible/inventory.ini"
+    - name: Create Compose interpolation secrets file
+      ansible.builtin.template:
+        src: "{{ playbook_dir }}/.env.j2"
+        dest: "{{ project_dir }}/deploy/.env"
+        owner: root
+        group: root
+        mode: "0600"
+      no_log: true
+
+    - name: Create API environment file
+      ansible.builtin.template:
+        src: "{{ playbook_dir }}/api.env.j2"
+        dest: "{{ project_dir }}/deploy/api.env"
+        owner: root
+        group: root
+        mode: "0600"
+      vars:
+        database_url: "postgresql+psycopg://court:{{ db_password }}@{{ primary_private_ip }}:5432/court"
+        redis_url: "redis://:{{ redis_password }}@{{ primary_private_ip }}:6379/0"
+        email_backend: "{{ 'smtp' if smtp_host_value | length > 0 else 'console' }}"
+      no_log: true
+
+    - name: Validate secondary Compose configuration
+      ansible.builtin.command:
+        cmd: docker compose --env-file deploy/.env -f deploy/compose-secondary.yml config --quiet
+        chdir: "{{ project_dir }}"
+      changed_when: false
+    - name: Wait for primary API and stateful services
+      ansible.builtin.uri:
+        url: "http://{{ primary_private_ip }}:8000/readyz"
+        status_code: 200
+      register: primary_ready
+      retries: 40
+      delay: 5
+      until: primary_ready.status == 200
+    - name: Launch secondary API, Nginx and monitoring stack
+      ansible.builtin.command:
+        cmd: docker compose --env-file deploy/.env -f deploy/compose-secondary.yml up -d --build
+        chdir: "{{ project_dir }}"
+    - name: Wait for secondary API readiness
+      ansible.builtin.uri:
+        url: "http://{{ node_private_ip }}:8000/readyz"
+        status_code: 200
+      register: secondary_ready
+      retries: 40
+      delay: 5
+      until: secondary_ready.status == 200

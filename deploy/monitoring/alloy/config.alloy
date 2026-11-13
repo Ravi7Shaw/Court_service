@@ -1,0 +1,52 @@
+logging {
+  level  = "info"
+  format = "logfmt"
+}
+
+loki.write "local" {
+  endpoint {
+    url = "http://" + sys.env("LOKI_HOST") + "/loki/api/v1/push"
+  }
+}
+
+loki.process "docker" {
+  forward_to = [loki.write.local.receiver]
+
+  stage.json {
+    expressions = {
+      output    = "log",
+      stream    = "stream",
+      timestamp = "time",
+    }
+  }
+
+  stage.labels {
+    values = {
+      stream = "stream",
+    }
+  }
+
+  stage.timestamp {
+    source = "timestamp"
+    format = "RFC3339Nano"
+  }
+
+  stage.output {
+    source = "output"
+  }
+}
+
+local.file_match "docker" {
+  path_targets = [
+    {
+      __path__ = "/var/lib/docker/containers/*/*-json.log",
+      job      = "docker",
+    },
+  ]
+  sync_period = "10s"
+}
+
+loki.source.file "docker" {
+  targets    = local.file_match.docker.targets
+  forward_to = [loki.process.docker.receiver]
+}

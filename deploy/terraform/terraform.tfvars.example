@@ -1,0 +1,13 @@
+# Copy this to terraform.tfvars and replace the placeholders.
+admin_cidr          = "YOUR_PUBLIC_IPV4/32"
+ssh_public_key_path = "~/.ssh/id_ed25519.pub"
+ssh_private_key_path = "~/.ssh/id_ed25519"
+instance_type       = "t3.small"
+# Required: copy an x86_64 Amazon Linux 2023 AMI ID from EC2 Console > AMIs in ap-southeast-2.
+ami_id              = "ami-REPLACE_WITH_REAL_ID"
+# Optional; defaults to these two Sydney AZ names.
+# availability_zones = ["ap-southeast-2a", "ap-southeast-2b"]
+aws_region          = "ap-southeast-2"
+# Optional: ACM certificate ARN in ap-southeast-2 enables HTTPS and HTTP redirect.
+# acm_certificate_arn = "arn:aws:acm:ap-southeast-2:ACCOUNT_ID:certificate/CERTIFICATE_ID"
+# domain_name = "courts.example.com"

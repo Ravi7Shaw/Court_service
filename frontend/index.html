@@ -1,0 +1,44 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
+  <meta name="theme-color" content="#101522"><title>Courtly — Court booking</title>
+  <link rel="stylesheet" href="/styles.css">
+</head>
+<body>
+  <div class="ambient ambient-a"></div><div class="ambient ambient-b"></div>
+  <header class="topbar"><a class="brand" href="/"><span class="brand-mark">C</span><span>Courtly</span></a>
+    <div class="top-actions"><span id="connection" class="connection"><i></i> Connecting</span><button id="logout" class="button button-ghost hidden">Sign out</button></div>
+  </header>
+  <main class="shell">
+    <section id="auth-view" class="auth-layout">
+      <div class="hero-copy"><span class="eyebrow">PLAY MORE. PLAN LESS.</span><h1>Your next game<br><em>starts here.</em></h1>
+        <p>Find a court, reserve your time, and get back to the game. Payments in this demo are simulated — no money is charged.</p>
+        <div class="hero-stats"><div><strong>24/7</strong><span>Booking access</span></div><div><strong>Instant</strong><span>Booking updates</span></div><div><strong>Secure</strong><span>Verified accounts</span></div></div>
+      </div>
+      <div class="auth-card panel"><div class="auth-tabs"><button class="tab active" data-tab="login">Sign in</button><button class="tab" data-tab="register">Create account</button></div>
+        <div id="auth-alert" class="alert hidden"></div>
+        <form id="login-form" class="auth-form"><div><label>Email address</label><input name="email" type="email" placeholder="you@gmail.com" autocomplete="email" required></div><div><label>Password</label><input name="password" type="password" placeholder="Your password" autocomplete="current-password" required></div><button class="button button-primary full" type="submit">Sign in <span>→</span></button><p class="fine-print">Your account must be email-verified before sign-in.</p></form>
+        <form id="register-form" class="auth-form hidden"><div><label>Email address</label><input name="email" type="email" placeholder="you@gmail.com" autocomplete="email" required></div><div><label>Password</label><input name="password" type="password" minlength="12" placeholder="At least 12 characters" autocomplete="new-password" required></div><button class="button button-primary full" type="submit">Create account <span>→</span></button><p class="fine-print">Use a strong password with at least 12 characters. We'll send a verification email.</p></form>
+      </div>
+    </section>
+
+    <section id="app-view" class="hidden">
+      <div class="welcome-row"><div><span class="eyebrow">YOUR COURT DASHBOARD</span><h1>Let's get <em>playing.</em></h1><p id="welcome-user" class="muted">Welcome back.</p></div><div class="user-chip"><span class="avatar" id="avatar">U</span><span id="user-email">User</span></div></div>
+      <div class="dashboard-grid">
+        <section class="panel booking-panel"><div class="section-heading"><div><span class="eyebrow">BOOK A COURT</span><h2>Find your court</h2></div><span class="live-pill"><i></i> Live availability</span></div>
+          <div id="court-list" class="court-list"><div class="skeleton"></div><div class="skeleton"></div></div>
+          <form id="booking-form" class="booking-form"><div class="form-grid"><div><label>Booking date</label><input id="booking-date" type="date" required></div><div><label>Start time</label><select id="booking-hour" required><option value="">Select time</option><option value="6">06:00</option><option value="7">07:00</option><option value="8">08:00</option><option value="9">09:00</option><option value="10">10:00</option><option value="11">11:00</option><option value="12">12:00</option><option value="13">13:00</option><option value="14">14:00</option><option value="15">15:00</option><option value="16">16:00</option><option value="17">17:00</option><option value="18">18:00</option><option value="19">19:00</option><option value="20">20:00</option><option value="21">21:00</option></select></div><div><label>Duration</label><select id="booking-duration"><option value="1">1 hour</option><option value="2">2 hours</option><option value="3">3 hours</option><option value="4">4 hours</option></select></div></div><button id="book-button" class="button button-primary full" type="submit" disabled>Select a court to continue <span>→</span></button><p class="fine-print">Booking creates a temporary hold. Confirm payment to secure it. Payment is simulated.</p></form>
+        </section>
+        <aside class="side-column"><section class="panel notification-panel"><div class="section-heading"><div><span class="eyebrow">ACTIVITY</span><h2>Notifications</h2></div><span id="unread-count" class="count">0</span></div><div id="notifications" class="notification-list"><p class="empty-state">No notifications yet.</p></div></section>
+          <section class="panel location-panel"><div class="location-icon">⌖</div><div><span class="eyebrow">NEAR YOU</span><h3>Find nearby courts</h3><p>Share your location only when you choose. You can remove it any time.</p><button id="share-location" class="button button-secondary">Share my location</button><button id="remove-location" class="text-button hidden">Remove saved location</button></div><div id="nearby-list" class="nearby-list"></div></section></aside>
+      </div>
+      <section id="admin-panel" class="panel admin-panel hidden"><div class="section-heading"><div><span class="eyebrow">ADMINISTRATION</span><h2>Manage courts</h2></div><span class="live-pill">Admin only</span></div><form id="create-court-form" class="form-grid admin-form"><div><label>Venue</label><select id="admin-venue" required></select></div><div><label>New court name</label><input id="admin-court-name" minlength="2" maxlength="60" placeholder="Court 4" required></div><div><label>&nbsp;</label><button class="button button-primary" type="submit">Create court →</button></div></form></section>
+      <section class="panel reservations-panel"><div class="section-heading"><div><span class="eyebrow">YOUR SCHEDULE</span><h2>My bookings</h2></div><button id="refresh" class="button button-ghost">Refresh ↻</button></div><div id="bookings-list" class="bookings-list"><p class="empty-state">Your bookings will appear here.</p></div></section>
+      <div class="footer-note">Courtly demo · Simulated payments · No real charges · <a href="/docs" target="_blank" rel="noreferrer">API documentation</a></div>
+    </section>
+  </main>
+  <div id="toast-root" class="toast-root" aria-live="polite"></div>
+  <div id="payment-modal" class="modal hidden"><div class="modal-card panel"><button id="close-modal" class="modal-close">×</button><span class="eyebrow">SECURE CHECKOUT · DEMO</span><h2>Confirm your payment</h2><p id="payment-summary" class="muted"></p><div class="payment-total"><span>Total due</span><strong id="payment-total">₹0</strong></div><p class="fine-print">This is a simulated payment. No card details are collected and no real money is transferred.</p><button id="confirm-payment" class="button button-primary full">Confirm simulated payment <span>→</span></button></div></div>
+  <script src="/app.js" defer></script>
+</body></html>

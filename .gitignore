@@ -1,0 +1,49 @@
+
+
+# Environment and secrets
+.env
+.env.*
+!.env.example
+deploy/.env
+secrets/
+*.pem
+*.key
+*.p12
+*.pfx
+deploy/ansible/inventory.ini
+
+# Terraform
+.terraform/
+*.tfstate
+*.tfstate.*
+*.tfplan
+*.tfvars
+*.tfvars.json
+crash.log
+deploy/terraform/deployment-credentials.txt
+
+# Python
+.venv/
+venv/
+env/
+__pycache__/
+*.py[cod]
+*.egg-info/
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+.coverage
+htmlcov/
+
+# Logs and temporary files
+*.log
+tmp/
+temp/
+
+# IDE and OS
+.idea/
+.vscode/
+.DS_Store
+
+# Archives
+*.zip
