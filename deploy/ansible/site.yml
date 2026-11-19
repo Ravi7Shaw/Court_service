@@ -166,6 +166,10 @@
       delay: 5
       until: pg_ready.rc == 0
       changed_when: false
+    - name: Build the updated API and worker images before migrations
+      ansible.builtin.command:
+        cmd: docker compose --env-file deploy/.env -f deploy/compose-primary.yml build api worker
+        chdir: "{{ project_dir }}"
     - name: Run database migrations and bootstrap admin/demo courts
       ansible.builtin.command:
         cmd: docker compose --env-file deploy/.env -f deploy/compose-primary.yml run --rm --no-deps --env BOOTSTRAP_ADMIN_EMAIL={{ admin_email }} --env BOOTSTRAP_ADMIN_PASSWORD={{ admin_password }} api sh -c 'alembic upgrade head && python -m app.seed'
@@ -174,7 +178,7 @@
 
     - name: Launch primary API, worker, Nginx and log shipper
       ansible.builtin.command:
-        cmd: docker compose --env-file deploy/.env -f deploy/compose-primary.yml up -d --build
+        cmd: docker compose --env-file deploy/.env -f deploy/compose-primary.yml up -d --no-build
         chdir: "{{ project_dir }}"
     - name: Wait for primary API readiness
       ansible.builtin.uri:

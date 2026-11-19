@@ -26,6 +26,20 @@ class Settings:
     allow_legacy_headers: bool = True
     allow_direct_confirm: bool = True
     debug_email_tokens: bool = True
+    admin_approval_required: bool = True
+    allow_http_demo: bool = False
+
+    def __post_init__(self) -> None:
+        if self.environment == "production":
+            if not self.admin_approval_required:
+                raise RuntimeError("Production requires admin approval for demo bookings")
+            if len(self.jwt_secret) < 32:
+                raise RuntimeError("JWT_SECRET must be at least 32 characters in production")
+            if self.allow_legacy_headers or self.allow_direct_confirm or self.debug_email_tokens:
+                raise RuntimeError("Production must disable legacy headers, direct confirmation and debug email tokens")
+            if not (self.app_base_url.startswith("https://") or
+                    (self.allow_http_demo and self.app_base_url.startswith("http://"))):
+                raise RuntimeError("APP_BASE_URL must use HTTPS in production")
 
     @classmethod
     def from_env(cls) -> Settings:
@@ -41,6 +55,7 @@ class Settings:
             pool_size=int(os.environ.get("DB_POOL_SIZE", "5")),
             max_overflow=int(os.environ.get("DB_MAX_OVERFLOW", "5")),
             environment=environment,
+            allow_http_demo=os.environ.get("ALLOW_HTTP_DEMO", "false").lower() == "true",
             redis_url=os.environ.get("REDIS_URL", "redis://localhost:6379/0"),
             jwt_secret=jwt_secret,
             jwt_issuer=os.environ.get("JWT_ISSUER", "court-service"),

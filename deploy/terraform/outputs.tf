@@ -23,7 +23,7 @@ output "prometheus_url" {
   value = "http://${aws_instance.node["secondary"].public_ip}:9090"
 }
 output "admin_email" {
-  value = "admin@court.local"
+  value = "ravi@gmail.com"
 }
 output "admin_password" {
   value     = random_password.admin.result
@@ -44,4 +44,8 @@ output "jwt_secret" {
 output "grafana_admin_password" {
   value     = random_password.grafana.result
   sensitive = true
+}
+
+output "allow_http_demo" {
+  value = var.allow_http_demo
 }

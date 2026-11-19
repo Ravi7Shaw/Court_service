@@ -55,14 +55,17 @@ def test_location_requires_consent_and_can_be_deleted(
 ) -> None:
     access_token, _ = register_and_login(client, "location@gmail.com")
     headers = {"Authorization": f"Bearer {access_token}"}
+    assert client.get("/api/me/location", headers=headers).json() == {"shared": False}
     denied = client.post("/api/me/location", headers=headers,
                          json={"latitude": 12.9716, "longitude": 77.5946, "consent": False})
     assert denied.status_code == 400
     saved = client.post("/api/me/location", headers=headers,
                         json={"latitude": 12.9716, "longitude": 77.5946, "consent": True})
     assert saved.status_code == 200
+    assert client.get("/api/me/location", headers=headers).json() == {"shared": True}
     deleted = client.delete("/api/me/location", headers=headers)
     assert deleted.status_code == 200
+    assert client.get("/api/me/location", headers=headers).json() == {"shared": False}
     nearby = client.get("/api/courts/nearby", headers=headers)
     assert nearby.status_code == 404
 

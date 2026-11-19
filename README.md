@@ -1,3 +1,7 @@
+<!-- coderabbit-ai-generated:v1 -->
+
+<!-- coderabbit-ai-generated-section:v1:070890aaf79f13d3409cb196d4f4b4de3bcc11ff7a85502f904f387aeb235cbb -->
+
 # Court Service — deployable demo platform
 
 A Python 3.14 court-booking service expanded with account registration, email verification, role-based admin endpoints, Redis rate limiting/cache, a transactional email outbox worker, simulated payments/refunds, opt-in location search, Nginx, and an AWS deployment using Terraform + Ansible.
@@ -9,10 +13,13 @@ A Python 3.14 court-booking service expanded with account registration, email ve
 - **API:** FastAPI, SQLAlchemy 2, PostgreSQL 16, Alembic migrations, original booking exclusion constraint and idempotency behavior.
 - **Authentication:** email/password registration, Argon2id password hashes, one-time email verification tokens, short-lived JWT access tokens, database-backed role checks (`member`, `staff`, `admin`).
 - **Abuse controls:** Nginx request limits plus shared Redis rate limits on registration/login (IP and login-email buckets). In production, auth requests fail closed if Redis is unavailable. Passwords are never logged.
-- **Payments:** provider-neutral `PaymentProvider` protocol and a deterministic simulated provider. The website has explicit **Confirm simulated payment** and **Simulate refund** actions.
-- **Notifications:** transactional PostgreSQL outbox, worker using `FOR UPDATE SKIP LOCKED`, retry/backoff and dead-letter state, in-app notifications, console simulation or SMTP delivery.
+- **Payments:** members report a demo payment; admins approve the payment and final reservation together. Eligible cancelled bookings require admin refund approval. No real money moves. The provider protocol remains available for a future integration.
+
+- **Notifications:** automatic transactional PostgreSQL outbox with leased `FOR UPDATE SKIP LOCKED` claims, stale-worker fencing, five-attempt retry/backoff, admin dead-letter replay, and in-app notifications. Console delivery is labelled simulated; SMTP is optional.
+
 - **Location:** browser geolocation is requested only after the user clicks Share; consent is stored, nearby search uses the saved location, and users can delete it.
-- **Admin:** bootstrap admin, create-court endpoint, venue-coordinate endpoint, and demo courts created by the seed command.
+- **Admin:** dashboard queues for demo account verification, payment/booking and refund decisions, message status and dead-letter retry, plus court and venue management.
+
 - **Frontend:** responsive vanilla HTML/CSS/JS website served by Nginx.
 - **Observability:** Prometheus metrics, Grafana dashboard, Loki log store, Grafana Alloy log shipper, Node Exporter, Postgres Exporter and Redis Exporter. Alloy is used instead of Promtail because Promtail reached end of life on March 2, 2026; see [Grafana migration guidance](https://grafana.com/docs/alloy/latest/set-up/migrate/from-promtail/).
 - **AWS:** VPC, two public subnets in separate AZs, ALB, two EC2 nodes, restricted security groups, encrypted EBS data volume, instance role/SSM, random credentials and generated Ansible inventory.
@@ -48,6 +55,28 @@ docker compose --profile test run --rm tests
 ```
 
 For host-side testing, install the dev extra with `uv sync --python 3.14 --extra dev` and set `TEST_DATABASE_URL` to a disposable PostgreSQL database whose name ends in `_test` before running `uv run pytest -q`.
+
+## Demo approval walkthrough
+
+Read [DESIGN.md](DESIGN.md) for the state machine, assumptions, intentional API response change and unresolved original-brief gaps.
+
+1. Register a member; sign in as the seeded administrator and choose **Verify demo account**.
+2. Sign in as the member, reserve a court and submit a payment-success message. This is a claim for review, not payment settlement. The reservation shows **Awaiting admin**.
+3. In the admin dashboard, approve or reject the request. Approval atomically confirms the booking and its demo ledger entry. Rejection frees the slot. Repeat decisions cannot create another payment.
+4. Cancel at least 24 hours before the start for full refund eligibility, then request a refund. An admin must approve it; otherwise no refund is recorded.
+5. Notifications queue automatically for members and admins. In console mode the outbox shows **simulated**, never actual email/SMS delivery. Dead messages can be retried from the admin dashboard.
+
+Initial holds last five minutes. A first payment report changes the deadline to at most 15 minutes from reporting, capped by booking start; retries never extend it. Expired approvals cannot revive a reservation. Pending reviews count toward the three future booking limit.
+
+Docker Compose already runs one shared worker. For host development with the same configured environment:
+
+```bash
+PYTHON_BIN=.venv/bin/python bash scripts/run-worker.sh
+```
+
+PostgreSQL stores offline members' messages. Hidden tabs and tabs idle for 60 seconds stop polling. Returning to the tab or interacting fetches current data; active tabs refresh every 15–20 seconds. There is no per-idle-user process or reserved connection. Run Ruff, mypy and pytest using the CI commands before delivery. Capacity and AWS deployment have not been certified by this patch.
+
+For a live change walkthrough, adjust the review deadline in `app/services/approvals.py`, explain why retries retain the first deadline, and run `pytest -q tests/test_admin_review.py`. This script is a rehearsal guide; a live client walkthrough remains to be held.
 
 ## AWS two-node deployment
 
@@ -91,9 +120,25 @@ Terraform intentionally requires `acknowledge_possible_charges=true`. This stack
 ssh-keygen -t ed25519 -f ~/.ssh/id_ed25519
 ```
 
+- Configure an issued ACM certificate and domain in `terraform.tfvars`; both are required for public HTTPS.
+
+Without SMTP, new demo accounts wait for admin verification. This does not prove mailbox ownership.
+
 - Set the ingress CIDR to your current public IPv4 `/32`. SSH, Grafana and Prometheus are restricted to this CIDR.
 
 ### One-command deployment
+
+The `deploy/deploy.sh` entry point also accepts `DOMAIN_NAME` and `ACM_CERTIFICATE_ARN`; these override the corresponding Terraform variables for both configuration checks and the saved deployment plan. For example, after setting `acknowledge_possible_charges=true` in `deploy/terraform/terraform.tfvars`:
+
+```bash
+DOMAIN_NAME=courts.your-domain.com \
+ACM_CERTIFICATE_ARN=arn:aws:acm:ap-southeast-2:YOUR_ACCOUNT:certificate/YOUR_CERTIFICATE \
+bash deploy/deploy.sh
+```
+
+Replace the example values with your domain and an issued ACM certificate covering that domain in the deployment region. Point the domain at the ALB DNS name. With both HTTPS inputs empty, the launcher defaults to the HTTP demo; a partial pair fails before planning. Set `ALLOW_HTTP_DEMO=false` to require HTTPS. No certificate is created automatically. The script applies the exact saved plan after you type APPLY. A plan proposing creation of all resources may mean a new deployment or a different state/workspace/account: check before applying to an existing environment.
+
+`bash deploy/destroy.sh` requires PLAN to create/show a saved destruction plan and DESTROY to apply that same plan. Temporary plan files are private and removed on exit. Review the resource list and back up any database you need before destruction. Neither script is a database backup facility.
 
 From the repository root (optionally set your own bootstrap admin email):
 
@@ -160,9 +205,11 @@ ansible-playbook -i deploy/ansible/inventory.ini deploy/ansible/site.yml \
   --extra-vars "db_password=$DB_PASSWORD redis_password=$REDIS_PASSWORD jwt_secret=$JWT_SECRET admin_password=$BOOTSTRAP_ADMIN_PASSWORD grafana_password=$GRAFANA_ADMIN_PASSWORD application_url=$APP_BASE_URL admin_email=$ADMIN_EMAIL primary_private_ip=$PRIMARY_PRIVATE_IP secondary_private_ip=$SECONDARY_PRIVATE_IP"
 ```
 
-### HTTPS and a domain
+### HTTP demo or HTTPS with a domain
 
-Without an ACM certificate ARN, the ALB endpoint uses HTTP. For real user credentials, configure a domain and an ACM certificate in the same AWS region, then apply with:
+The one-command demo launcher now defaults to HTTP using the AWS load balancer hostname, as requested. Run `bash deploy/deploy.sh` to deploy and `bash deploy/destroy.sh` to remove it (review their plan/confirmation prompts). No custom domain or certificate is needed for that demo. Login traffic is unencrypted; browser geolocation generally requires HTTPS. Use synthetic demo accounts.
+
+Direct Terraform and application configuration remain HTTPS by default. For HTTPS, configure a domain and an issued ACM certificate in the same AWS region:
 
 ```bash
 -var="acm_certificate_arn=arn:aws:acm:REGION:ACCOUNT:certificate/CERTIFICATE_ID" \
@@ -173,7 +220,7 @@ Terraform then creates an HTTPS listener and redirects HTTP to HTTPS. The certif
 
 ### Real email delivery with Gmail SMTP (optional)
 
-By default the AWS demo uses a **console/simulated email backend**. The outbox worker records delivery and adds an in-app “Email sent” notification; the verification token is exposed only in this demo mode so the frontend can complete verification. No email is sent to Gmail unless SMTP is configured.
+With the default console backend, registration creates an unverified account for the admin dashboard to approve. No verification token is exposed in this review flow, including development. Admin approval grants demo access and does not verify mailbox ownership. SMTP is optional for real email verification and delivery. There is no SMS provider.
 
 To send actual email, use a Gmail App Password (requires 2-Step Verification), not your normal Gmail password:
 
@@ -186,7 +233,9 @@ SMTP_FROM=your-address@gmail.com \
 ./scripts/deploy-aws.sh
 ```
 
-With SMTP configured, verification is not auto-completed and the user must click the emailed verification link. SMTP secrets are passed only to the background worker environment, not the public API container.
+With SMTP configured, the user can verify using the emailed link; an admin can also approve a demo account.
+
+ SMTP STARTTLS validates the server certificate and hostname. SMTP secrets are passed only to the background worker environment, not the public API container.
 
 ### Destroy AWS resources
 
@@ -209,10 +258,20 @@ Terraform destroy removes the ALB, EC2 instances, EBS data volume and generated 
 | GET | `/api/auth/me` | Current authenticated user and role |
 | GET | `/api/courts` | Active courts; Redis cached briefly |
 | POST | `/holds` | Create a temporary booking hold |
-| POST | `/api/payments/{reservation_id}/simulate` | Simulate payment and confirm a hold |
+| POST | `/holds/{id}/confirm` | Submit for admin payment/booking review (202) |
+| GET | `/courts/{id}/availability` | Current availability and venue prices |
+| POST | `/api/payments/{reservation_id}/report` | Report a demo payment for admin review |
+| POST | `/api/payments/{reservation_id}/simulate` | Compatibility alias; still requires admin review |
 | GET | `/api/payments/{reservation_id}` | Read payment status |
 | POST | `/bookings/{booking_id}/cancel` | Cancel booking and calculate refund eligibility |
-| POST | `/api/payments/{reservation_id}/refund/simulate` | Simulate eligible refund |
+| POST | `/api/payments/{reservation_id}/refund/request` | Request an eligible simulated refund for admin review |
+| POST | `/api/payments/{reservation_id}/refund/simulate` | Compatibility alias; still requires admin review |
+| GET | `/api/admin/approvals` | Oldest 100 pending reviews (admin only) |
+| POST | `/api/admin/approvals/{id}/decision` | Final idempotent approve/reject decision |
+| GET | `/api/admin/users/pending` | Demo accounts waiting for approval |
+| POST | `/api/admin/users/{id}/verify` | Approve demo account access |
+| GET | `/api/admin/outbox` | Recent message status, dead letters first |
+| POST | `/api/admin/outbox/{id}/retry` | Requeue a dead message |
 | GET | `/api/bookings/me` | List the current user's bookings |
 | GET | `/api/notifications` | In-app notification feed |
 | POST | `/api/me/location` | Save location after explicit consent |
@@ -229,9 +288,23 @@ Terraform destroy removes the ALB, EC2 instances, EBS data volume and generated 
 
 ## Security notes
 
-- Production deployment disables legacy identity headers and direct hold confirmation. Payment simulation is the only production demo path to confirm a hold. Recurring booking creation is disabled in production until recurring payment checkout exists.
+- Production disables legacy identity headers and automatic confirmation. All demo payment paths require admin review. Recurring creation is disabled whenever review is required, until series checkout/review exists.
+
 - Access tokens are short-lived; role and account status are re-read from PostgreSQL on each authenticated request.
-- Do not use the console email mode for real user accounts; configure SMTP or another real delivery provider.
+- Demo registration supports manual admin approval without SMTP. Production never exposes verification tokens.
+
 - The simulated payment provider is not PCI payment processing. Integrate a real provider with signed webhooks, idempotency, reconciliation and provider-side refund handling before accepting money.
 - Location is never collected in the background. It is only saved after explicit consent and can be deleted.
 - Do not expose Grafana/Prometheus admin ports to `0.0.0.0/0`; Terraform restricts them to `admin_cidr`.
+
+## Security configuration
+
+- Production refuses debug email tokens, legacy identity headers, direct confirmation and short JWT secrets. HTTP application URLs require the explicit `ALLOW_HTTP_DEMO=true` transport exception, which the demo launcher propagates to API and worker. Supply `APP_BASE_URL` to both.
+- The public Nginx entry point blocks `/metrics`; Prometheus scrapes the private API port. Unknown URLs share a bounded metrics label. Keep port 8000 restricted to trusted nodes: Uvicorn trusts proxy headers there, and Nginx overwrites forwarded client addresses after resolving the ALB address.
+- Per-email authentication limits are shared across client IPs. Redis remains mandatory for production authentication.
+- The website uses a same-origin Content Security Policy, local system font fallbacks, accessible labels and venue-timezone availability. The API docs use a separate Swagger distribution policy.
+- Local Compose publishes the website and monitoring ports on loopback. Do not expose demo credentials or compatibility identity headers publicly.
+- Existing AWS deployments need a reviewed Terraform plan and Ansible rollout to receive these fixes. No infrastructure is changed by editing this repository.
+
+
+<!-- /coderabbit-ai-generated:v1 -->

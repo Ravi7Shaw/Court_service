@@ -38,7 +38,7 @@ services:
     environment:
       DATABASE_URL: postgresql+psycopg://court:${DB_PASSWORD}@db:5432/court
       REDIS_URL: redis://:${REDIS_PASSWORD}@redis:6379/0
-    command: ["uvicorn", "app.api:app", "--host", "0.0.0.0", "--port", "8000", "--workers", "1"]
+    command: ["uvicorn", "app.api:app", "--host", "0.0.0.0", "--port", "8000", "--workers", "1", "--forwarded-allow-ips", "*"]
     depends_on:
       db: { condition: service_healthy }
       redis: { condition: service_healthy }

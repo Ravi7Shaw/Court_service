@@ -102,7 +102,7 @@ def venue(factory: sessionmaker[Session]) -> Venue_:
 
 @pytest.fixture()
 def client(engine: Engine, factory: sessionmaker[Session]) -> Iterator[TestClient]:
-    app = create_app(Settings(TEST_URL, STAFF_KEY, 40, 20), engine=engine)
+    app = create_app(Settings(TEST_URL, STAFF_KEY, 40, 20, admin_approval_required=False), engine=engine)
     with TestClient(app) as test_client:
         yield test_client
 

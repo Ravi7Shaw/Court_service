@@ -29,15 +29,21 @@ def verify_password(password: str, encoded: str) -> bool:
 def create_access_token(user_id: uuid.UUID, settings: Settings) -> str:
     now = datetime.now(UTC)
     return jwt.encode(
-        {"sub": str(user_id), "iss": settings.jwt_issuer, "iat": now,
-         "exp": now + timedelta(minutes=settings.jwt_minutes), "jti": secrets.token_urlsafe(12)},
+        {
+            "sub": str(user_id),
+            "iss": settings.jwt_issuer,
+            "iat": now,
+            "exp": now + timedelta(minutes=settings.jwt_minutes),
+            "jti": secrets.token_urlsafe(12),
+        },
         settings.jwt_secret,
         algorithm="HS256",
     )
 
 
 def decode_access_token(token: str, settings: Settings) -> dict[str, Any]:
-    return jwt.decode(token, settings.jwt_secret, algorithms=["HS256"], issuer=settings.jwt_issuer)
+    return jwt.decode(token, settings.jwt_secret, algorithms=["HS256"], issuer=settings.jwt_issuer,
+                      options={"require": ["sub", "iss", "iat", "exp", "jti"]})
 
 
 def token_hash(token: str) -> str:

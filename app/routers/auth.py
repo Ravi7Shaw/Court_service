@@ -12,7 +12,7 @@ from sqlalchemy.exc import IntegrityError
 
 from app.errors import ApiError
 from app.models import EmailVerification, Member, User
-from app.notifications import notify_and_queue_email
+from app.notifications import notify_admins, notify_and_queue_email
 from app.rate_limit import enforce_rate_limit
 from app.security import (create_access_token, hash_password, new_verification_token,
                           token_hash, verify_password)
@@ -44,11 +44,13 @@ def factory(request: Request):
 def register(body: RegisterIn, request: Request) -> dict[str, object]:
     enforce_rate_limit(request, "register", 5, 900)
     normalized = str(body.email).strip().lower()
-    enforce_rate_limit(request, "register-email-" + hashlib.sha256(normalized.encode()).hexdigest()[:16], 3, 3600)
+    enforce_rate_limit(request, "register-email-" + hashlib.sha256(normalized.encode()).hexdigest()[:16], 3, 3600, per_ip=False)
     if len(body.password) < 12:
         raise ApiError("weak_password", 422, "password must contain at least 12 characters")
-    token = new_verification_token()
     settings = request.app.state.settings
+    if settings.environment == "production" and settings.email_backend != "smtp" and not settings.admin_approval_required:
+        raise ApiError("registration_unavailable", 503, "registration requires email delivery; contact the administrator")
+    token = new_verification_token()
 
     def work(session: Session) -> User:
         if session.scalar(select(User.id).where(User.email == normalized)):
@@ -60,13 +62,21 @@ def register(body: RegisterIn, request: Request) -> dict[str, object]:
                     role="member", is_verified=False, is_active=True)
         session.add(user)
         session.flush()
-        session.add(EmailVerification(user_id=user.id, token_hash=token_hash(token),
-                                      expires_at=datetime.now(UTC) + timedelta(hours=24)))
-        verify_url = f"{settings.app_base_url.rstrip('/')}/?verify={token}"
-        notify_and_queue_email(session, user, "email_verification", "Verify your email",
-                               "Your account was created. Check your email to verify it.",
-                               "Verify your Court Service account",
-                               f"Welcome! Verify your email within 24 hours: {verify_url}")
+        if settings.admin_approval_required and settings.email_backend == "console":
+            notify_and_queue_email(session, user, "account_pending", "Account awaiting admin approval",
+                                   "Your demo account is waiting for admin approval. No verification email was sent.",
+                                   "Demo account awaiting approval", "An admin must approve your demo account.",
+                                   dedupe_key=f"account-pending:{user.id}")
+            notify_admins(session, "account_review", "Account verification requested", normalized,
+                          f"account:{user.id}")
+        else:
+            session.add(EmailVerification(user_id=user.id, token_hash=token_hash(token),
+                                          expires_at=datetime.now(UTC) + timedelta(hours=24)))
+            verify_url = f"{settings.app_base_url.rstrip('/')}/?verify={token}"
+            notify_and_queue_email(session, user, "email_verification", "Verify your email",
+                                   "Your account was created. Check your email to verify it.",
+                                   "Verify your Court Service account",
+                                   f"Welcome! Verify your email within 24 hours: {verify_url}")
         return user
 
     try:
@@ -75,7 +85,10 @@ def register(body: RegisterIn, request: Request) -> dict[str, object]:
         raise ApiError("email_unavailable", 409, "an account with this email already exists") from exc
     result: dict[str, object] = {"id": str(user.id), "email": user.email,
                                  "message": "Registration created. Verify your email before signing in."}
-    if settings.debug_email_tokens:
+    result["requires_admin_verification"] = settings.admin_approval_required and settings.email_backend == "console"
+    if result["requires_admin_verification"]:
+        result["message"] = "Registration created. An admin must approve your demo account before signing in."
+    if settings.debug_email_tokens and settings.environment != "production" and not settings.admin_approval_required:
         result["debug_verification_token"] = token
     return result
 
@@ -106,7 +119,7 @@ def verify_email(body: VerifyIn, request: Request) -> dict[str, str]:
 def login(body: LoginIn, request: Request) -> dict[str, object]:
     enforce_rate_limit(request, "login", 10, 900)
     normalized = str(body.email).strip().lower()
-    enforce_rate_limit(request, "login-email-" + hashlib.sha256(normalized.encode()).hexdigest()[:16], 5, 900)
+    enforce_rate_limit(request, "login-email-" + hashlib.sha256(normalized.encode()).hexdigest()[:16], 5, 900, per_ip=False)
     settings = request.app.state.settings
 
     def work(session: Session) -> User | None:

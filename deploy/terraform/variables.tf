@@ -46,7 +46,11 @@ variable "volume_size_gb" {
 
 variable "admin_cidr" {
   type        = string
-  description = "Your public IPv4 CIDR for SSH and monitoring, e.g. 203.0.113.10/32."
+  description = "Your public IPv4 /32 for SSH and monitoring, e.g. 203.0.113.10/32."
+  validation {
+    condition     = can(cidrnetmask(var.admin_cidr)) && can(regex("/32$", var.admin_cidr)) && var.admin_cidr != "0.0.0.0/32"
+    error_message = "admin_cidr must be a single administrator IPv4 address (/32)."
+  }
 }
 
 variable "ssh_public_key_path" {
@@ -79,4 +83,10 @@ variable "domain_name" {
   type        = string
   default     = ""
   description = "DNS name covered by the ACM certificate; point it to the ALB DNS name."
+}
+
+variable "allow_http_demo" {
+  type        = bool
+  default     = false
+  description = "Explicit demo exception: allow HTTP login without a certificate. Traffic is unencrypted."
 }

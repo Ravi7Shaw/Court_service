@@ -10,6 +10,10 @@ command -v terraform >/dev/null || {
 }
 
 cd "$TF"
+umask 077
+WORK="$(mktemp -d)"
+trap 'rm -rf -- "$WORK"' EXIT
+PLAN="$WORK/destroy.tfplan"
 
 echo "=========================================="
 echo " WARNING: DESTROY COURT SERVICE AWS"
@@ -24,20 +28,18 @@ read -r -p "Type PLAN to inspect destruction: " CONFIRM
 [[ "$CONFIRM" == "PLAN" ]] || exit 1
 
 terraform init
-terraform plan -destroy -out=tfplan-destroy
+terraform plan -destroy -input=false -var="allow_http_demo=${ALLOW_HTTP_DEMO:-true}" -out="$PLAN"
 
-terraform show tfplan-destroy
+terraform show "$PLAN"
 
 echo
 read -r -p "Type DESTROY to delete AWS resources: " CONFIRM
 
 if [[ "$CONFIRM" != "DESTROY" ]]; then
-    rm -f tfplan-destroy
     echo "Cancelled. Nothing destroyed."
     exit 0
 fi
 
-terraform apply tfplan-destroy
-rm -f tfplan-destroy
+terraform apply -input=false "$PLAN"
 
 echo "Terraform destruction completed."

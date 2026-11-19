@@ -47,3 +47,6 @@ temp/
 
 # Archives
 *.zip
+
+# Deployment template contains placeholders only.
+!deploy/ansible/.env.j2

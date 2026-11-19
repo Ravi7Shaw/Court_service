@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import logging
 import smtplib
+import ssl
 from email.message import EmailMessage
 
 from sqlalchemy.orm import Session
@@ -32,16 +33,27 @@ def notify_and_queue_email(
 
 
 def deliver_email(settings: Settings, recipient: str, subject: str, body: str) -> None:
-    if settings.email_backend == "console" or not settings.smtp_host:
+    if settings.email_backend == "console":
         log.info("SIMULATED_EMAIL recipient=%s subject=%s", recipient, subject)
         return
+    if settings.email_backend != "smtp" or not settings.smtp_host:
+        raise RuntimeError("SMTP delivery requires a configured SMTP host")
     msg = EmailMessage()
     msg["From"] = settings.smtp_from
     msg["To"] = recipient
     msg["Subject"] = subject
     msg.set_content(body)
     with smtplib.SMTP(settings.smtp_host, settings.smtp_port, timeout=15) as smtp:
-        smtp.starttls()
+        smtp.starttls(context=ssl.create_default_context())
         if settings.smtp_username:
             smtp.login(settings.smtp_username, settings.smtp_password)
         smtp.send_message(msg)
+
+
+def notify_admins(session: Session, kind: str, title: str, message: str, event_key: str) -> None:
+    from sqlalchemy import select
+    admins = session.scalars(select(User).where(User.role == "admin", User.is_active.is_(True),
+                                               User.is_verified.is_(True))).all()
+    for admin in admins:
+        notify_and_queue_email(session, admin, kind, title, message, title, message,
+                               dedupe_key=f"{event_key}:{admin.id}")

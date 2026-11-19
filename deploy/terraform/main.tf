@@ -247,9 +247,14 @@ resource "aws_lb" "app" {
   internal                   = false
   security_groups            = [aws_security_group.alb.id]
   subnets                    = aws_subnet.public[*].id
+  drop_invalid_header_fields = true
   enable_deletion_protection = false
   tags                       = { Project = var.project_name }
   lifecycle {
+    precondition {
+      condition     = var.allow_http_demo || (var.acm_certificate_arn != "" && var.domain_name != "")
+      error_message = "Set acm_certificate_arn and domain_name for HTTPS, or explicitly enable allow_http_demo for unencrypted demo traffic."
+    }
     precondition {
       condition     = var.acknowledge_possible_charges
       error_message = "Review AWS charges and re-run with -var='acknowledge_possible_charges=true'."

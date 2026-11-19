@@ -15,12 +15,13 @@ _local_lock = threading.Lock()
 _local_events: dict[str, deque[float]] = defaultdict(deque)
 
 
-def enforce_rate_limit(request: Request, bucket: str, limit: int, window_seconds: int) -> None:
+def enforce_rate_limit(request: Request, bucket: str, limit: int, window_seconds: int, *, per_ip: bool = True) -> None:
     settings = request.app.state.settings
     client = request.app.state.redis
-    forwarded = request.headers.get("x-forwarded-for", "").split(",")[-1].strip()
-    ip = forwarded or (request.client.host if request.client else "unknown")
-    key = f"ratelimit:{bucket}:{ip}"
+    # Nginx overwrites this header after resolving the trusted ALB client address.
+    # Uvicorn trusts that proxy on the private API port; the limiter ignores raw headers.
+    ip = request.client.host if request.client else "unknown"
+    key = f"ratelimit:{bucket}:{ip}" if per_ip else f"ratelimit:{bucket}"
     try:
         count = int(client.eval(
             "local n = redis.call('INCR', KEYS[1]); "

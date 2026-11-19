@@ -1,6 +1,9 @@
 from __future__ import annotations
 import uuid
 from fastapi import APIRouter, Depends, Request
+from fastapi.responses import JSONResponse
+from pydantic import BaseModel, Field
+from app.services import approvals
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 from app.db import run_tx
@@ -12,9 +15,24 @@ from app.notifications import notify_and_queue_email
 
 router = APIRouter(prefix="/api/payments", tags=["payments"])
 
-@router.post("/{reservation_id}/simulate")
+class ReportIn(BaseModel):
+    message: str = Field(default="Payment reported by member", max_length=500)
+
+
+@router.post("/{reservation_id}/report", status_code=202)
+def report_payment(reservation_id: uuid.UUID, body: ReportIn, request: Request,
+                   user: User = Depends(get_current_user)) -> dict[str, object]:
+    return run_tx(request.app.state.factory, lambda s: approvals.output(
+        approvals.submit(s, user.member_id, reservation_id, "payment", body.message)))
+
+
+@router.post("/{reservation_id}/simulate", response_model=None)
 def simulate_payment(reservation_id: uuid.UUID, request: Request,
-                     user: User = Depends(get_current_user)) -> dict[str, object]:
+                     user: User = Depends(get_current_user)) -> dict[str, object] | JSONResponse:
+    if request.app.state.settings.admin_approval_required:
+        result = run_tx(request.app.state.factory, lambda s: approvals.output(
+            approvals.submit(s, user.member_id, reservation_id, "payment")))
+        return JSONResponse(status_code=202, content=result)
     provider = request.app.state.payment_provider
     def work(session: Session) -> dict[str, object]:
         reservation = session.scalar(select(Reservation).where(
@@ -58,9 +76,14 @@ def payment_status(reservation_id: uuid.UUID, request: Request,
                 "refund_minor": payment.refund_minor, "currency": payment.currency,
                 "provider": payment.provider}
 
-@router.post("/{reservation_id}/refund/simulate")
+@router.post("/{reservation_id}/refund/request", response_model=None)
+@router.post("/{reservation_id}/refund/simulate", response_model=None)
 def simulate_refund(reservation_id: uuid.UUID, request: Request,
-                    user: User = Depends(get_current_user)) -> dict[str, object]:
+                    user: User = Depends(get_current_user)) -> dict[str, object] | JSONResponse:
+    if request.app.state.settings.admin_approval_required:
+        result = run_tx(request.app.state.factory, lambda s: approvals.output(
+            approvals.submit(s, user.member_id, reservation_id, "refund")))
+        return JSONResponse(status_code=202, content=result)
     provider = request.app.state.payment_provider
     def work(session: Session) -> dict[str, object]:
         reservation = session.scalar(select(Reservation).where(
@@ -76,7 +99,7 @@ def simulate_refund(reservation_id: uuid.UUID, request: Request,
         if amount <= 0:
             raise ApiError("not_refundable", 409, "this cancellation is not eligible for a refund")
         if payment.status == "refunded":
-            return {"status": "refunded", "refund_minor": payment.refund_minor}
+            return {"status": "refunded", "refund_minor": payment.refund_minor, "currency": payment.currency}
         provider.refund(payment.provider_reference, amount, f"refund-{reservation.id}")
         payment.refund_minor = amount
         payment.status = "refunded" if amount == payment.amount_minor else "partially_refunded"

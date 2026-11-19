@@ -25,7 +25,7 @@ from app.payments.base import PaymentProvider
 from app.notifications import notify_and_queue_email
 from app.routers import admin, auth, bookings, location, notifications, payments
 from app.security import decode_access_token
-from app.services import holds, queries, recurring
+from app.services import approvals, holds, queries, recurring
 
 HTTP_REQUESTS = Counter("court_http_requests_total", "HTTP requests", ["method", "path", "status"])
 HTTP_LATENCY = Histogram("court_http_request_duration_seconds", "HTTP request duration", ["method", "path"])
@@ -105,17 +105,8 @@ def create_app(settings: Settings | None = None, engine: Engine | None = None,
         import time
         started = time.perf_counter()
         response = await call_next(request)
-        raw_path = request.url.path
-        if raw_path.startswith("/api/"):
-            path = "/api/*"
-        elif raw_path.startswith("/holds/"):
-            path = "/holds/*"
-        elif raw_path.startswith("/bookings/"):
-            path = "/bookings/*"
-        elif raw_path.startswith("/courts/"):
-            path = "/courts/*"
-        else:
-            path = raw_path
+        route = request.scope.get("route")
+        path = getattr(route, "path", "unmatched")
         HTTP_REQUESTS.labels(request.method, path, str(response.status_code)).inc()
         HTTP_LATENCY.labels(request.method, path).observe(time.perf_counter() - started)
         response.headers["X-Content-Type-Options"] = "nosniff"
@@ -157,13 +148,16 @@ def create_app(settings: Settings | None = None, engine: Engine | None = None,
 
     @app.post("/holds")
     def post_hold(body: HoldIn, member_id: uuid.UUID = Depends(get_member_id),
-                  idempotency_key: str | None = Header(default=None, alias="Idempotency-Key")) -> JSONResponse:
+                  idempotency_key: str | None = Header(default=None, alias="Idempotency-Key", min_length=1, max_length=120)) -> JSONResponse:
         result = run_tx(factory, lambda s: holds.create_hold(
             s, member_id, body.court_id, body.starts_at, body.ends_at, idempotency_key))
         return JSONResponse(status_code=201 if result.created else 200, content=_out(result.reservation))
 
     @app.post("/holds/{hold_id}/confirm")
     def post_confirm(hold_id: uuid.UUID, member_id: uuid.UUID = Depends(get_member_id)) -> JSONResponse:
+        if settings.admin_approval_required:
+            review = run_tx(factory, lambda s: approvals.submit(s, member_id, hold_id, "payment"))
+            return JSONResponse(status_code=202, content=approvals.output(review))
         if not settings.allow_direct_confirm:
             raise ApiError("payment_required", 409, "use the simulated payment endpoint to confirm this booking")
         result = run_tx(factory, lambda s: holds.confirm_hold(s, member_id, hold_id))
@@ -191,13 +185,13 @@ def create_app(settings: Settings | None = None, engine: Engine | None = None,
                     ))
                     if existing_refund_notice is None:
                         session.add(Notification(user_id=user.id, kind="refund_action", title="Refund available",
-                            message=f"Booking {reservation.id} is eligible for a refund. Use the Refund button to simulate processing."))
+                            message=f"Booking {reservation.id} is eligible for a refund. Request a refund for admin review."))
             return reservation
         reservation = run_tx(factory, cancel_and_notify)
         refund = reservation.refund_minor or 0
         return JSONResponse(status_code=200, content={"id": str(reservation.id), "status": reservation.status,
             "refund_minor": refund, "refund": "full" if refund > 0 else "none",
-            "refund_status": "awaiting_simulation" if refund > 0 else "not_eligible"})
+            "refund_status": ("awaiting_admin_request" if settings.admin_approval_required else "awaiting_simulation") if refund > 0 else "not_eligible"})
 
     @app.get("/courts/{court_id}/availability")
     def get_availability(court_id: uuid.UUID, from_: datetime = Query(..., alias="from"),
@@ -209,7 +203,7 @@ def create_app(settings: Settings | None = None, engine: Engine | None = None,
 
     @app.post("/recurring-bookings")
     def post_series(body: SeriesIn, member_id: uuid.UUID = Depends(get_member_id)) -> JSONResponse:
-        if not settings.allow_direct_confirm:
+        if settings.admin_approval_required or not settings.allow_direct_confirm:
             raise ApiError("recurring_payment_unsupported", 409, "recurring bookings are disabled until recurring payment checkout is implemented")
         result = run_tx(factory, lambda s: recurring.create_series(
             s, member_id, body.court_id, body.starts_at, body.ends_at, body.occurrences))

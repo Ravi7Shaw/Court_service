@@ -17,6 +17,12 @@ class LocationIn(BaseModel):
     longitude: float = Field(ge=-180, le=180)
     consent: bool
 
+@router.get("/me/location")
+def location_consent(request: Request, user: User = Depends(get_current_user)) -> dict[str, bool]:
+    with request.app.state.factory() as session:
+        return {"shared": session.get(UserLocation, user.id) is not None}
+
+
 @router.post("/me/location")
 def save_location(body: LocationIn, request: Request, user: User = Depends(get_current_user)) -> dict[str, str]:
     if not body.consent:
@@ -44,7 +50,7 @@ def delete_location(request: Request, user: User = Depends(get_current_user)) ->
 def list_courts(request: Request) -> list[dict[str, object]]:
     cache = request.app.state.redis
     try:
-        cached = cache.get("courts:active:v1")
+        cached = cache.get("courts:active:v2")
         if cached:
             return json.loads(cached)
     except Exception:
@@ -53,9 +59,9 @@ def list_courts(request: Request) -> list[dict[str, object]]:
         rows = session.execute(select(Court, Venue).join(Venue, Court.venue_id == Venue.id).where(Court.active.is_(True))).all()
         result = [{"id": str(c.id), "name": c.name, "venue_id": str(v.id), "venue": v.name,
                    "latitude": v.latitude, "longitude": v.longitude, "currency": v.currency,
-                   "payments_enabled": v.payments_enabled} for c, v in rows]
+                   "payments_enabled": v.payments_enabled, "timezone": v.timezone} for c, v in rows]
     try:
-        cache.setex("courts:active:v1", 30, json.dumps(result))
+        cache.setex("courts:active:v2", 30, json.dumps(result))
     except Exception:
         pass
     return result
