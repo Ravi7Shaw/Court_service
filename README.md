@@ -43,7 +43,7 @@ Open:
 
 The local seed creates a demo venue with three courts and an administrator. Local-only demo defaults are:
 
-- Email: `admin@court.local`
+- Email: `admin@courtly.example` (a reserved example domain; `.local` addresses are rejected by the login validator)
 - Password: `LocalOnly-ChangeMe-123!`
 
 Change this password immediately if you use the local setup beyond a disposable demo. The API's local environment allows legacy `X-Member-Id` and `X-Staff-Key` headers so the original tests continue to work; the AWS Ansible deployment explicitly disables those compatibility headers.
