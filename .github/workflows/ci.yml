@@ -2,11 +2,20 @@ name: ci
 
 on:
   push:
+    branches: [main] # use your default branch name
   pull_request:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
 
 jobs:
   checks:
     runs-on: ubuntu-24.04
+    timeout-minutes: 20
     services:
       postgres:
         image: postgres:16
@@ -23,6 +32,8 @@ jobs:
       TEST_DATABASE_URL: postgresql+psycopg://booking:booking@localhost:5432/booking_test
     steps:
       - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
       - uses: actions/setup-python@v5
         with:
           python-version: "3.14"
@@ -36,7 +47,9 @@ jobs:
       - name: Compile Python sources
         run: python -m compileall -q app migrations tests
       - name: Create the test database
-        run: PGPASSWORD=booking psql -h localhost -U booking -d booking -c "CREATE DATABASE booking_test"
+        env:
+          PGPASSWORD: booking
+        run: psql -h localhost -U booking -d booking -v ON_ERROR_STOP=1 -c "CREATE DATABASE booking_test"
       - name: Migrations apply cleanly on an empty database
         run: alembic upgrade head
       - name: Tests (domain, API contract, constraints, concurrency)
@@ -45,14 +58,20 @@ jobs:
   compose-smoke:
     runs-on: ubuntu-24.04
     needs: checks
+    timeout-minutes: 15
     steps:
       - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
       - name: Prepare local environment
         run: cp .env.example .env
       - name: Start the stack
         run: docker compose up -d --build --wait
       - name: The API answers
-        run: curl -fsS http://localhost:8080/readyz
+        run: curl -fsS --retry 10 --retry-delay 2 --retry-connrefused http://localhost:8080/readyz
+      - name: Show logs on failure
+        if: failure()
+        run: docker compose logs
       - name: Stop the stack
         if: always()
         run: docker compose down -v
