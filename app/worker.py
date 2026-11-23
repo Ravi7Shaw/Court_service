@@ -3,7 +3,9 @@ from __future__ import annotations
 import logging
 import signal
 import threading
+import time
 import uuid
+from collections.abc import Callable
 from datetime import timedelta
 
 from sqlalchemy import func, select, update, or_, and_
@@ -82,6 +84,27 @@ def expire_holds(factory) -> None:
         ).values(status="expired"))
 
 
+def drain(factory, settings: Settings, should_stop: Callable[[], bool]) -> int:
+    """Deliver every claimable message, then return. Used on each wakeup and on each sweep."""
+    processed = 0
+    while not should_stop() and process_one(factory, settings):
+        processed += 1
+    return processed
+
+
+def build_waker(settings: Settings, should_stop: Callable[[], bool]):  # noqa: ANN201
+    if settings.kafka_bootstrap_servers:
+        from app.events import KafkaWaker
+
+        log.info("waking on Kafka topic %s; sweep every %.0fs", settings.kafka_topic, settings.worker_sweep_seconds)
+        return KafkaWaker(settings.kafka_bootstrap_servers, settings.kafka_topic,
+                          settings.kafka_consumer_group, should_stop)
+    from app.events import SleepWaker
+
+    log.info("no Kafka configured; polling every %.0fs", settings.worker_sweep_seconds)
+    return SleepWaker(should_stop)
+
+
 def main() -> None:
     settings = Settings.from_env()
     engine = make_engine(settings.database_url, settings.pool_size, settings.max_overflow)
@@ -94,19 +117,26 @@ def main() -> None:
 
     signal.signal(signal.SIGTERM, request_stop)
     signal.signal(signal.SIGINT, request_stop)
+    waker = build_waker(settings, stopping.is_set)
     log.info("notification worker started")
+    next_sweep = 0.0
     try:
         while not stopping.is_set():
             try:
-                worked = process_one(factory, settings)
-                expire_holds(factory)
-                if not worked:
-                    stopping.wait(2)
+                drain(factory, settings, stopping.is_set)
+                now = time.monotonic()
+                if now >= next_sweep:
+                    # Expiry is housekeeping, not a delivery path, so it runs on a timer, not per wakeup.
+                    expire_holds(factory)
+                    next_sweep = now + settings.worker_sweep_seconds
+                waker.wait(next_sweep - time.monotonic())
             except Exception:
                 log.exception("worker iteration failed")
                 stopping.wait(5)
     finally:
+        waker.close()
         engine.dispose()
+
 
 if __name__ == "__main__":
     main()

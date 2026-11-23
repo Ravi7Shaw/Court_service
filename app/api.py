@@ -26,6 +26,7 @@ from app.notifications import notify_and_queue_email
 from app.routers import admin, auth, bookings, location, notifications, payments
 from app.security import decode_access_token
 from app.services import approvals, holds, queries, recurring
+from app import events
 
 HTTP_REQUESTS = Counter("court_http_requests_total", "HTTP requests", ["method", "path", "status"])
 HTTP_LATENCY = Histogram("court_http_request_duration_seconds", "HTTP request duration", ["method", "path"])
@@ -75,6 +76,7 @@ def create_app(settings: Settings | None = None, engine: Engine | None = None,
         try:
             yield
         finally:
+            events.get_publisher().close()
             app.state.redis.close()
             if owns_engine:
                 engine.dispose()
@@ -96,6 +98,10 @@ def create_app(settings: Settings | None = None, engine: Engine | None = None,
     app.state.payment_provider = (
         payment_provider or build_payment_provider(settings.payment_provider)
     )
+    if settings.kafka_bootstrap_servers:
+        events.set_publisher(events.KafkaPublisher(settings.kafka_bootstrap_servers, settings.kafka_topic))
+    else:
+        events.set_publisher(events.NullPublisher())
     app.add_middleware(CORSMiddleware, allow_origins=[settings.app_base_url.rstrip("/")],
                        allow_credentials=True, allow_methods=["GET", "POST", "PUT", "DELETE"],
                        allow_headers=["Authorization", "Content-Type", "Idempotency-Key"])

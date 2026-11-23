@@ -9,6 +9,7 @@ from sqlalchemy.orm import Session
 from sqlalchemy.dialects.postgresql import insert as pg_insert
 
 from app.config import Settings
+from app.events import mark_outbox_dirty
 from app.models import Notification, NotificationOutbox, User
 
 log = logging.getLogger(__name__)
@@ -30,6 +31,8 @@ def notify_and_queue_email(
     else:
         session.add(NotificationOutbox(user_id=user.id, recipient=user.email, subject=subject, body=body))
     session.add(Notification(user_id=user.id, kind=kind, title=title, message=message))
+    # The worker is woken only after this transaction commits.
+    mark_outbox_dirty(session)
 
 
 def deliver_email(settings: Settings, recipient: str, subject: str, body: str) -> None:
