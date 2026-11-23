@@ -66,9 +66,9 @@ jobs:
       - name: Prepare local environment
         run: cp .env.example .env
       - name: Start the stack
-        run: docker compose up -d --build --wait
+        run: docker compose up -d --build
       - name: The API answers
-        run: curl -fsS --retry 10 --retry-delay 2 --retry-connrefused http://localhost:8080/readyz
+        run: curl -fsS --retry 30 --retry-delay 2 --retry-connrefused http://localhost:8080/readyz
       - name: Show logs on failure
         if: failure()
         run: |
