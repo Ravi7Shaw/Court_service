@@ -93,6 +93,8 @@ services:
       REDIS_URL: redis://:${REDIS_PASSWORD:-local-redis-password}@redis:6379/0
       KAFKA_BOOTSTRAP_SERVERS: kafka:9092
     command: ["python", "-m", "app.worker"]
+    healthcheck:
+      disable: true
     depends_on:
       migrate: { condition: service_completed_successfully }
       kafka: { condition: service_healthy }
