@@ -34,7 +34,19 @@
           <section class="panel location-panel"><div class="location-icon">⌖</div><div><span class="eyebrow">NEAR YOU</span><h3>Find nearby courts</h3><p>Share your location only when you choose. You can remove it any time.</p><button id="share-location" class="button button-secondary">Share my location</button><button id="remove-location" class="text-button hidden">Remove saved location</button></div><div id="nearby-list" class="nearby-list"></div></section></aside>
       </div>
       <section id="review-panel" class="panel reservations-panel hidden"><div class="section-heading"><div><span class="eyebrow">ADMIN REVIEW</span><h2>Approvals &amp; delivery queue</h2></div></div><h3>Payment and refund requests</h3><div id="approval-list"></div><h3>Account verification</h3><div id="pending-users"></div><h3>Notification delivery</h3><p class="fine-print">Demo messages are recorded without sending email or SMS.</p><div id="outbox-list"></div></section>
-      <section id="admin-panel" class="panel admin-panel hidden"><div class="section-heading"><div><span class="eyebrow">ADMINISTRATION</span><h2>Manage courts</h2></div><span class="live-pill">Admin only</span></div><form id="create-court-form" class="form-grid admin-form"><div><label for="admin-venue">Venue</label><select id="admin-venue" required></select></div><div><label for="admin-court-name">New court name</label><input id="admin-court-name" minlength="2" maxlength="60" placeholder="Court 4" required></div><div><label>&nbsp;</label><button class="button button-primary" type="submit">Create court →</button></div></form></section>
+      <section id="admin-panel" class="panel admin-panel hidden" aria-labelledby="admin-heading">
+        <div class="section-heading"><div><span class="eyebrow">ADMINISTRATION</span><h2 id="admin-heading">Venues &amp; courts</h2></div><span class="live-pill">Admin only</span></div>
+        <p class="fine-print">A venue appears in “Find nearby courts” only when it has a location and its court is active. Changes apply to members immediately.</p>
+        <p id="admin-summary" class="admin-summary" aria-live="polite"></p>
+        <div id="admin-status" class="alert hidden" role="status"></div>
+        <div id="admin-venues" class="admin-venues"></div>
+        <h3 class="admin-subheading">Add a court</h3>
+        <form id="create-court-form" class="form-grid admin-form" novalidate>
+          <div><label for="admin-court-venue">Venue</label><select id="admin-court-venue" required></select></div>
+          <div><label for="admin-court-name">Court name</label><input id="admin-court-name" name="name" minlength="2" maxlength="60" placeholder="Court 4" autocomplete="off" required></div>
+          <div class="form-action"><button class="button button-primary" type="submit">Create court →</button></div>
+        </form>
+      </section>
       <section class="panel reservations-panel"><div class="section-heading"><div><span class="eyebrow">YOUR SCHEDULE</span><h2>My bookings</h2></div><button id="refresh" class="button button-ghost">Refresh ↻</button></div><div id="bookings-list" class="bookings-list"><p class="empty-state">Your bookings will appear here.</p></div></section>
       <div class="footer-note">Courtly demo · Simulated payments · No real charges · <a href="/docs" target="_blank" rel="noreferrer">API documentation</a></div>
     </section>
@@ -42,4 +54,5 @@
   <div id="toast-root" class="toast-root" aria-live="polite"></div>
   <div id="payment-modal" class="modal hidden" role="dialog" aria-modal="true" aria-labelledby="payment-heading"><div class="modal-card panel"><button id="close-modal" aria-label="Close checkout" class="modal-close">×</button><span class="eyebrow">ADMIN REVIEW · DEMO</span><h2 id="payment-heading">Report demo payment</h2><p id="payment-summary" class="muted"></p><div class="payment-total"><span>Total due</span><strong id="payment-total">₹0</strong></div><p class="fine-print">No money moves. Submit your payment report for an admin to review. Your booking becomes confirmed only after approval; pending review expires within 15 minutes.</p><label for="payment-message">Message for admin</label><input id="payment-message" maxlength="500" placeholder="Payment reported successfully (demo)"><button id="confirm-payment" class="button button-primary full">Submit for admin review <span>→</span></button></div></div>
   <script src="/app.js" defer></script>
+  <script src="/admin.js" defer></script>
 </body></html>

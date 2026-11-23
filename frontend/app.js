@@ -75,8 +75,9 @@ async function showDashboard() {
   $('auth-view').classList.add('hidden'); $('app-view').classList.remove('hidden'); $('logout').classList.remove('hidden');
   $('user-email').textContent = currentUser.email; $('avatar').textContent = currentUser.email[0].toUpperCase();
   $('welcome-user').textContent = `Signed in as ${currentUser.role} · Your next game is one booking away.`;
-  await Promise.all([loadCourts(), loadBookings(), loadNotifications(), loadLocationConsent()]);
-  if (currentUser.role === 'admin') { await loadAdminVenues(); await loadReview(); } else { $('admin-panel').classList.add('hidden'); $('review-panel').classList.add('hidden'); }
+  const [, , , locationShared] = await Promise.all([loadCourts(), loadBookings(), loadNotifications(), loadLocationConsent()]);
+  if (locationShared) await loadNearby();
+  if (currentUser.role === 'admin') { await loadAdminPanel(); await loadReview(); } else { window.clearAdminPanel(); $('review-panel').classList.add('hidden'); }
   lastActivity = Date.now(); scheduleRefresh();
   $('connection').classList.add('online'); $('connection').innerHTML = '<i></i> API connected';
 }
@@ -90,7 +91,7 @@ function signOut() {
   sessionStorage.removeItem('court_token');
   closePayment();
   ['court-list', 'bookings-list', 'notifications', 'nearby-list'].forEach((id) => $(id).replaceChildren());
-  $('admin-panel').classList.add('hidden');
+  window.clearAdminPanel();
   $('review-panel').classList.add('hidden');
   ['approval-list', 'pending-users', 'outbox-list'].forEach((id) => $(id).replaceChildren());
   $('remove-location').classList.add('hidden');
@@ -265,40 +266,70 @@ async function loadNotifications() {
 }
 $('refresh').addEventListener('click', () => refreshData());
 
-async function loadAdminVenues() {
-  $('admin-panel').classList.remove('hidden');
-  const venues = await api('/api/admin/venues');
-  $('admin-venue').innerHTML = '';
-  venues.forEach((venue) => {
-    const option = document.createElement('option'); option.value = venue.id; option.textContent = venue.name;
-    $('admin-venue').append(option);
-  });
-}
-$('create-court-form').addEventListener('submit', async (event) => {
-  event.preventDefault();
-  try {
-    const result = await api('/api/admin/courts', { method: 'POST', body: JSON.stringify({
-      venue_id: $('admin-venue').value, name: $('admin-court-name').value.trim()
-    }) });
-    $('admin-court-name').value = ''; toast(`Created ${result.name}.`); await loadCourts();
-  } catch (error) { toast(error.message, true); }
-});
+const NEARBY_RADIUS_KM = 25;
 
 async function loadLocationConsent() {
   const result = await api('/api/me/location');
   $('remove-location').classList.toggle('hidden', !result.shared);
+  if (!result.shared) $('nearby-list').replaceChildren();
+  return result.shared;
 }
+
+function nearbyMessage(text, isError = false) {
+  const note = document.createElement('p');
+  note.className = isError ? 'alert' : 'empty-state';
+  note.textContent = text;
+  return note;
+}
+
+function renderNearby(rows) {
+  const root = $('nearby-list');
+  root.replaceChildren();
+  if (!rows.length) {
+    root.append(nearbyMessage(`No active courts within ${NEARBY_RADIUS_KM} km of your saved location.`));
+    return;
+  }
+  rows.forEach((court) => {
+    const row = document.createElement('div');
+    row.className = 'nearby-item';
+    const name = document.createElement('span');
+    name.textContent = `${court.name} · ${court.venue}`;
+    const distance = document.createElement('span');
+    distance.textContent = `${court.distance_km} km`;
+    row.append(name, distance);
+    root.append(row);
+  });
+}
+
+async function loadNearby() {
+  try {
+    renderNearby(await api(`/api/courts/nearby?radius_km=${NEARBY_RADIUS_KM}`));
+  } catch (error) {
+    $('nearby-list').replaceChildren(nearbyMessage(error.message, true));
+  }
+}
+
 $('share-location').addEventListener('click', () => {
   if (!navigator.geolocation) return toast('Geolocation is not supported by this browser.', true);
   navigator.geolocation.getCurrentPosition(async (position) => {
-    try { await api('/api/me/location', { method: 'POST', body: JSON.stringify({ latitude: position.coords.latitude, longitude: position.coords.longitude, consent: true }) });
-      $('remove-location').classList.remove('hidden'); const nearby = await api('/api/courts/nearby?radius_km=25');
-      $('nearby-list').innerHTML = ''; nearby.forEach((court) => { const row = document.createElement('div'); row.className = 'nearby-item'; const name = document.createElement('span'); name.textContent = court.name; const distance = document.createElement('span'); distance.textContent = `${court.distance_km} km`; row.append(name, distance); $('nearby-list').append(row); });
+    try {
+      await api('/api/me/location', { method: 'POST', body: JSON.stringify({
+        latitude: position.coords.latitude, longitude: position.coords.longitude, consent: true }) });
+      $('remove-location').classList.remove('hidden');
+      await loadNearby();
       toast('Location saved with your consent.');
     } catch (e) { toast(e.message, true); }
-  }, (error) => toast(error.message || 'Location permission was not granted.', true), { enableHighAccuracy: false, timeout: 10000, maximumAge: 300000 });
+  }, (error) => toast(error.message || 'Location permission was not granted.', true),
+  { enableHighAccuracy: false, timeout: 10000, maximumAge: 300000 });
 });
-$('remove-location').addEventListener('click', async () => { try { await api('/api/me/location', { method: 'DELETE' }); $('remove-location').classList.add('hidden'); $('nearby-list').innerHTML = ''; toast('Saved location removed.'); } catch (e) { toast(e.message, true); } });
+$('remove-location').addEventListener('click', async () => {
+  try {
+    await api('/api/me/location', { method: 'DELETE' });
+    $('remove-location').classList.add('hidden');
+    $('nearby-list').replaceChildren();
+    toast('Saved location removed.');
+  } catch (e) { toast(e.message, true); }
+});
 
 async function boot() {
   try { const health = await fetch('/readyz'); if (!health.ok) throw new Error('unavailable'); $('connection').classList.add('online'); $('connection').innerHTML = '<i></i> API online'; }
@@ -359,17 +390,112 @@ function reviewRow(root, label, actions = []) {
   }
   root.append(row);
 }
+// One decision card per request. The admin always sees what the request is,
+// what it will change, and must confirm before money-related state changes.
+const APPROVAL_COPY = {
+  refund: {
+    title: 'Refund request',
+    approve: (amount) => `Approve refund of ${amount}`,
+    approveConfirm: (amount, email) => `Approve a refund of ${amount} to ${email}?\n\nThis marks the booking payment as refunded.`,
+    approveDetail: 'Approving marks the payment as refunded.',
+    decline: 'Decline refund',
+    declineDetail: 'Declining leaves the payment unchanged and the member is told why.',
+  },
+  payment: {
+    title: 'Payment report',
+    approve: (amount) => `Confirm payment of ${amount}`,
+    approveConfirm: (amount, email) => `Confirm that ${email} paid ${amount}?\n\nThe booking will be confirmed.`,
+    approveDetail: 'Confirming makes the booking final.',
+    decline: 'Reject payment',
+    declineDetail: 'Rejecting releases the hold so the slot can be booked again.',
+  },
+};
+
+function approvalCard(root, request) {
+  const copy = APPROVAL_COPY[request.kind] || { title: request.kind, approve: () => 'Approve', approveConfirm: () => 'Approve?', approveDetail: '', decline: 'Decline', declineDetail: '' };
+  const amount = money(request.amount_minor, request.currency);
+  const card = document.createElement('div');
+  card.className = 'review-row approval-card';
+
+  const heading = document.createElement('p');
+  heading.className = 'approval-title';
+  heading.textContent = `${copy.title} · ${amount}`;
+  const detail = document.createElement('p');
+  detail.className = 'fine-print';
+  detail.textContent = `${request.court} · ${request.email} · requested ${new Date(request.created_at).toLocaleString()}`;
+  card.append(heading, detail);
+
+  if (request.member_message) {
+    const note = document.createElement('p');
+    note.className = 'approval-message';
+    note.textContent = `Member says: “${request.member_message}”`;
+    card.append(note);
+  }
+  if (request.expires_at) {
+    const expiry = document.createElement('p');
+    expiry.className = 'fine-print';
+    expiry.textContent = `Hold expires ${new Date(request.expires_at).toLocaleTimeString()}`;
+    card.append(expiry);
+  }
+
+  const actions = document.createElement('div');
+  actions.className = 'approval-actions';
+  const explain = document.createElement('p');
+  explain.className = 'fine-print';
+
+  const decide = async (button, approve, note) => {
+    button.disabled = true;
+    try {
+      const result = await api(`/api/admin/approvals/${request.id}/decision`, { method: 'POST', body: JSON.stringify({ approve, note }) });
+      toast(approve ? `${copy.title} approved.` : `${copy.title} declined.`);
+      updates?.postMessage('changed');
+      await refreshData();
+      return result;
+    } catch (error) {
+      toast(error.message, true);
+      button.disabled = false;
+      return null;
+    }
+  };
+
+  if (request.actionable) {
+    const approveButton = document.createElement('button');
+    approveButton.className = 'button button-primary';
+    approveButton.textContent = copy.approve(amount);
+    approveButton.addEventListener('click', () => {
+      if (!confirm(copy.approveConfirm(amount, request.email))) return;
+      decide(approveButton, true, '');
+    });
+    const declineButton = document.createElement('button');
+    declineButton.className = 'button button-secondary';
+    declineButton.textContent = copy.decline;
+    declineButton.addEventListener('click', () => {
+      const note = prompt(`${copy.decline}?\n\nOptional message to the member (leave blank for none):`, '');
+      if (note === null) return;
+      decide(declineButton, false, note.trim());
+    });
+    actions.append(approveButton, declineButton);
+    explain.textContent = `${copy.approveDetail} ${copy.declineDetail}`;
+  } else {
+    const closeButton = document.createElement('button');
+    closeButton.className = 'button button-secondary';
+    closeButton.textContent = 'Close as expired';
+    closeButton.addEventListener('click', () => {
+      if (!confirm('Close this request? The hold has expired and the slot is released.')) return;
+      decide(closeButton, false, 'Hold expired before payment was confirmed.');
+    });
+    actions.append(closeButton);
+    explain.textContent = 'The hold has expired, so this can only be closed.';
+  }
+  card.append(actions, explain);
+  root.append(card);
+}
 async function loadReview() {
   $('review-panel').classList.remove('hidden');
   const [requests, users, messages] = await Promise.all([api('/api/admin/approvals'), api('/api/admin/users/pending'), api('/api/admin/outbox')]);
   ['approval-list', 'pending-users', 'outbox-list'].forEach((id) => $(id).replaceChildren());
   if (!requests.length) reviewRow($('approval-list'), 'No pending payment or refund requests.');
-  requests.forEach((request) => reviewRow($('approval-list'),
-    `${request.email} · ${request.court} · ${request.kind} · ${money(request.amount_minor, request.currency)} · ${request.member_message}${request.expires_at ? ` · Expires ${new Date(request.expires_at).toLocaleTimeString()}` : ''}`,
-    (request.actionable ? [true, false] : [false]).map((approve) => ({ label: approve ? 'Approve' : 'Reject / close', run: async () => {
-      const result = await api(`/api/admin/approvals/${request.id}/decision`, { method: 'POST', body: JSON.stringify({ approve }) });
-      toast(`Request ${result.status}.`);
-    } }))));
+  requests.forEach((request) => approvalCard($('approval-list'), request));
   if (!users.length) reviewRow($('pending-users'), 'No accounts awaiting verification.');
   users.forEach((user) => reviewRow($('pending-users'), user.email, [{ label: 'Verify demo account', run: () => api(`/api/admin/users/${user.id}/verify`, { method: 'POST' }) }]));
   if (!messages.length) reviewRow($('outbox-list'), 'No queued messages.');

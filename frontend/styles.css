@@ -7,3 +7,37 @@ button,input,select{font:inherit}button:focus-visible,a:focus-visible,input:focu
 .footer-note a{text-decoration:underline;text-underline-offset:3px}.avatar{font-size:14px}
 
 .review-row{display:flex;align-items:center;gap:12px;padding:12px 0;border-bottom:1px solid var(--line);flex-wrap:wrap}.review-row p{flex:1 1 260px;margin:0;font-size:13px;overflow-wrap:anywhere}#review-panel h3{margin:24px 0 8px;font-size:16px}#payment-message{margin:8px 0 18px}.status{white-space:normal}
+
+/* Administration: venues, coordinates and court status */
+.admin-summary{margin:0 0 14px;color:var(--muted);font-size:13px}
+.admin-subheading{margin:22px 0 10px;font-size:15px}
+.admin-venues{display:grid;gap:14px}
+.admin-venue{background:var(--panel2);border:1px solid var(--line);border-radius:16px;padding:16px;display:grid;gap:12px}
+.admin-venue-head{display:flex;justify-content:space-between;align-items:flex-start;gap:12px;flex-wrap:wrap}
+.admin-venue-head h3{margin:0 0 2px;font-size:16px}
+.admin-venue-head p{margin:0}
+.admin-courts{display:grid;gap:8px}
+.admin-courts .eyebrow,.admin-venue>.eyebrow{margin:0;font-size:10px}
+.court-row{display:flex;justify-content:space-between;align-items:center;gap:12px;padding:8px 0;border-bottom:1px solid var(--line)}
+.court-row:last-child{border-bottom:0}
+.court-row-name{font-size:14px}
+.court-toggle{min-width:96px;padding:8px 14px}
+.court-toggle[aria-pressed="false"]{opacity:.85}
+.status-pill{display:inline-flex;align-items:center;gap:6px;border-radius:999px;padding:5px 11px;font-size:12px;border:1px solid var(--line);color:var(--text);background:var(--panel)}
+.status-pill.ok{border-color:rgba(197,243,107,.45);color:var(--lime)}
+.status-pill.warn{border-color:rgba(255,139,139,.45);color:var(--red)}
+.coords-form{display:grid;gap:10px}
+.coords-fields{display:grid;grid-template-columns:repeat(auto-fit,minmax(180px,1fr));gap:12px}
+.coords-fields label{display:block;margin-bottom:6px}
+.coords-actions{display:flex;align-items:center;gap:14px;flex-wrap:wrap}
+.field-error{margin:0;color:var(--red);font-size:13px}
+.field-error[hidden]{display:none}
+.form-action{display:flex;align-items:end}
+.form-action .button{width:100%}
+
+/* Admin decision cards for payment and refund requests */
+.approval-card{display:grid;gap:8px}
+.approval-title{margin:0;font-weight:600;font-size:15px}
+.approval-card .fine-print{margin:0}
+.approval-message{margin:0;padding:10px 12px;border-left:3px solid var(--lime);background:var(--panel2);border-radius:8px;font-size:14px}
+.approval-actions{display:flex;gap:10px;flex-wrap:wrap;margin-top:4px}
