@@ -18,6 +18,7 @@ dependencies = [
     "argon2-cffi>=25.1.0",
     "redis>=6.4.0",
     "prometheus-client>=0.23.1",
+    "confluent-kafka>=2.6.0",
 ]
 
 [project.optional-dependencies]

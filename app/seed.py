@@ -11,7 +11,7 @@ from app.security import hash_password
 
 def main() -> None:
     settings = Settings.from_env()
-    admin_email = os.environ.get("BOOTSTRAP_ADMIN_EMAIL", "admin@court.local").strip().lower()
+    admin_email = os.environ.get("BOOTSTRAP_ADMIN_EMAIL", "admin@courtly.example").strip().lower()
     admin_password = os.environ.get("BOOTSTRAP_ADMIN_PASSWORD")
     if not admin_password:
         if settings.environment == "production":

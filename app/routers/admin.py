@@ -1,69 +1,38 @@
 from __future__ import annotations
+
 import uuid
+from collections import defaultdict
+
 from fastapi import APIRouter, Depends, Request
 from pydantic import BaseModel, Field
+from sqlalchemy import case, select
 from sqlalchemy.orm import Session
+
 from app.db import run_tx
 from app.dependencies import get_current_user
 from app.errors import ApiError
 from app.models import ApprovalRequest, Court, NotificationOutbox, Reservation, User, Venue
-from sqlalchemy import select, case
+from app.notifications import notify_and_queue_email
 from app.services import approvals
 from app.services.common import db_now
-from app.notifications import notify_and_queue_email
 
 router = APIRouter(prefix="/api/admin", tags=["administration"])
+
+COURT_LIST_CACHE_KEY = "courts:active:v2"
+
 
 class CourtCreate(BaseModel):
     venue_id: uuid.UUID
     name: str = Field(min_length=2, max_length=60)
 
+
+class CourtStatus(BaseModel):
+    active: bool
+
+
 class VenueCoordinates(BaseModel):
     latitude: float = Field(ge=-90, le=90)
     longitude: float = Field(ge=-180, le=180)
-
-@router.post("/courts", status_code=201)
-def create_court(body: CourtCreate, request: Request, user: User = Depends(get_current_user)) -> dict[str, str]:
-    if user.role != "admin":
-        raise ApiError("forbidden", 403, "administrator role required")
-    def work(session: Session) -> Court:
-        venue = session.get(Venue, body.venue_id)
-        if venue is None:
-            raise ApiError("venue_not_found", 404, "venue not found")
-        court = Court(venue_id=venue.id, name=body.name.strip(), active=True)
-        session.add(court)
-        session.flush()
-        return court
-    court = run_tx(request.app.state.factory, work)
-    try:
-        request.app.state.redis.delete("courts:active:v2")
-    except Exception:
-        pass
-    return {"id": str(court.id), "name": court.name, "venue_id": str(court.venue_id)}
-
-@router.put("/venues/{venue_id}/coordinates")
-def update_venue_coordinates(venue_id: uuid.UUID, body: VenueCoordinates, request: Request,
-                             user: User = Depends(get_current_user)) -> dict[str, str]:
-    if user.role != "admin":
-        raise ApiError("forbidden", 403, "administrator role required")
-    def work(session: Session) -> None:
-        venue = session.get(Venue, venue_id)
-        if venue is None:
-            raise ApiError("venue_not_found", 404, "venue not found")
-        venue.latitude, venue.longitude = body.latitude, body.longitude
-    run_tx(request.app.state.factory, work)
-    try:
-        request.app.state.redis.delete("courts:active:v2")
-    except Exception:
-        pass
-    return {"status": "updated"}
-
-@router.get("/venues")
-def list_venues(request: Request, user: User = Depends(get_current_user)) -> list[dict[str, str]]:
-    if user.role != "admin":
-        raise ApiError("forbidden", 403, "administrator role required")
-    with request.app.state.factory() as session:
-        return [{"id": str(v.id), "name": v.name} for v in session.query(Venue).order_by(Venue.name).all()]
 
 
 class DecisionIn(BaseModel):
@@ -74,6 +43,109 @@ class DecisionIn(BaseModel):
 def require_admin(user: User) -> None:
     if user.role != "admin":
         raise ApiError("forbidden", 403, "administrator role required")
+
+
+def _invalidate_court_cache(request: Request) -> None:
+    """Drop the shared court list so members see admin changes immediately.
+
+    A failed delete is tolerated: the cache entry expires within 30 seconds anyway.
+    """
+    try:
+        request.app.state.redis.delete(COURT_LIST_CACHE_KEY)
+    except Exception:
+        pass
+
+
+@router.get("/venues")
+def list_venues(request: Request, user: User = Depends(get_current_user)) -> list[dict[str, object]]:
+    """Every venue with its coordinates and courts, for the administration screen."""
+    require_admin(user)
+    with request.app.state.factory() as session:
+        venues = session.scalars(select(Venue).order_by(Venue.name).limit(200)).all()
+        courts_by_venue: dict[uuid.UUID, list[dict[str, object]]] = defaultdict(list)
+        for court in session.scalars(select(Court).where(Court.venue_id.in_([v.id for v in venues]))
+                                     .order_by(Court.name)):
+            courts_by_venue[court.venue_id].append({"id": str(court.id), "name": court.name,
+                                                    "active": court.active})
+        return [{
+            "id": str(v.id),
+            "name": v.name,
+            "timezone": v.timezone,
+            "latitude": v.latitude,
+            "longitude": v.longitude,
+            "location_set": v.latitude is not None and v.longitude is not None,
+            "courts": courts_by_venue[v.id],
+        } for v in venues]
+
+
+@router.post("/courts", status_code=201)
+def create_court(body: CourtCreate, request: Request, user: User = Depends(get_current_user)) -> dict[str, str]:
+    require_admin(user)
+
+    def work(session: Session) -> Court:
+        venue = session.get(Venue, body.venue_id)
+        if venue is None:
+            raise ApiError("venue_not_found", 404, "venue not found")
+        court = Court(venue_id=venue.id, name=body.name.strip(), active=True)
+        session.add(court)
+        session.flush()
+        return court
+
+    court = run_tx(request.app.state.factory, work)
+    _invalidate_court_cache(request)
+    return {"id": str(court.id), "name": court.name, "venue_id": str(court.venue_id)}
+
+
+@router.patch("/courts/{court_id}")
+def set_court_status(court_id: uuid.UUID, body: CourtStatus, request: Request,
+                     user: User = Depends(get_current_user)) -> dict[str, object]:
+    """Activate or deactivate a court. Inactive courts disappear from members' lists and nearby search."""
+    require_admin(user)
+
+    def work(session: Session) -> Court:
+        court = session.get(Court, court_id)
+        if court is None:
+            raise ApiError("court_not_found", 404, "court not found")
+        court.active = body.active
+        session.flush()
+        return court
+
+    court = run_tx(request.app.state.factory, work)
+    _invalidate_court_cache(request)
+    return {"id": str(court.id), "name": court.name, "active": court.active}
+
+
+@router.put("/venues/{venue_id}/coordinates")
+def update_venue_coordinates(venue_id: uuid.UUID, body: VenueCoordinates, request: Request,
+                             user: User = Depends(get_current_user)) -> dict[str, str]:
+    require_admin(user)
+
+    def work(session: Session) -> None:
+        venue = session.get(Venue, venue_id)
+        if venue is None:
+            raise ApiError("venue_not_found", 404, "venue not found")
+        venue.latitude, venue.longitude = body.latitude, body.longitude
+
+    run_tx(request.app.state.factory, work)
+    _invalidate_court_cache(request)
+    return {"status": "updated"}
+
+
+@router.delete("/venues/{venue_id}/coordinates")
+def clear_venue_coordinates(venue_id: uuid.UUID, request: Request,
+                            user: User = Depends(get_current_user)) -> dict[str, str]:
+    """Remove a venue's location. Its courts then stop appearing in nearby search."""
+    require_admin(user)
+
+    def work(session: Session) -> None:
+        venue = session.get(Venue, venue_id)
+        if venue is None:
+            raise ApiError("venue_not_found", 404, "venue not found")
+        venue.latitude, venue.longitude = None, None
+
+    run_tx(request.app.state.factory, work)
+    _invalidate_court_cache(request)
+    return {"status": "cleared"}
 
 
 @router.get("/approvals")
