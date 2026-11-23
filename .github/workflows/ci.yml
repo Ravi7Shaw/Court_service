@@ -71,7 +71,14 @@ jobs:
         run: curl -fsS --retry 10 --retry-delay 2 --retry-connrefused http://localhost:8080/readyz
       - name: Show logs on failure
         if: failure()
-        run: docker compose logs
+        run: |
+          docker compose ps -a
+          echo "=== api ==="
+          docker compose logs --no-color --tail 200 api
+          echo "=== migrate ==="
+          docker compose logs --no-color --tail 100 migrate
+          echo "=== api health ==="
+          docker inspect --format '{{json .State.Health}}' court-service-local-api-1 || true
       - name: Stop the stack
         if: always()
         run: docker compose down -v
